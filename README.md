@@ -24,9 +24,9 @@ Important local files:
 Authentication:
 
 - Locally, auth is inactive by default so the dashboard can run without Clerk keys.
-- On Railway, Clerk auth is active automatically because Railway environment markers are present.
+- On Railway, Clerk auth is inactive until explicitly enabled with the auth flags and Clerk keys.
 - Enable Google as a social connection in Clerk.
-- Set `VITE_WINDOW_WATCHER_AUTH=true`, `VITE_CLERK_PUBLISHABLE_KEY`, and `CLERK_SECRET_KEY`.
+- Set `VITE_WINDOW_WATCHER_AUTH=true`, `WINDOW_WATCHER_AUTH=true`, `VITE_CLERK_PUBLISHABLE_KEY`, and `CLERK_SECRET_KEY`.
 - Set `AUTHORIZED_EMAIL` to the single Google account that may access the dashboard.
 - The server function refuses to return temperature data unless the signed-in Clerk user has a verified Google OAuth account with that email.
 - Set `WINDOW_WATCHER_AUTH=true` only if you want the server to enforce Clerk auth locally too.
@@ -46,7 +46,7 @@ Railway is represented by `nixpacks.toml`. The service should run as an always-o
 Railway setup:
 
 1. Deploy from the public GitHub repo.
-2. Add `VITE_WINDOW_WATCHER_AUTH=true`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `AUTHORIZED_EMAIL` as Railway variables.
+2. To enable Google auth, add `VITE_WINDOW_WATCHER_AUTH=true`, `WINDOW_WATCHER_AUTH=true`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `AUTHORIZED_EMAIL` as Railway variables. Leave the auth flags unset or `false` until Clerk keys are configured.
 3. In Clerk, enable Google sign-in and add the Railway production domain to the allowed production URLs/redirect configuration for the Clerk application.
 4. Add the location/tado variables from `.env.example` as needed.
 5. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH` to the mount path. The app stores `temperature-history.jsonl` and `.tado-token.json` below that path. For first boot, set `TADO_TOKEN_JSON` as a secret Railway variable with the local tado token JSON; after the first refresh, the volume-backed token file keeps future updates.

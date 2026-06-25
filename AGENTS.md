@@ -99,8 +99,8 @@ Environment variables:
 - `VITE_CLERK_PUBLISHABLE_KEY`, Clerk public browser key. Required on Railway for the browser sign-in UI.
 - `CLERK_SECRET_KEY`, Clerk server key. Never commit it.
 - `AUTHORIZED_EMAIL`, the only verified Google OAuth email allowed to read dashboard data
-- `VITE_WINDOW_WATCHER_AUTH`, public browser flag. Set to `true` on Railway and only during local auth testing.
-- `WINDOW_WATCHER_AUTH`, optional. Set to `true` only to force Clerk auth locally; Railway enables auth automatically via Railway environment markers.
+- `VITE_WINDOW_WATCHER_AUTH`, public browser flag. Set to `true` only when Clerk keys are configured and the browser sign-in UI should be active.
+- `WINDOW_WATCHER_AUTH`, optional server flag. Set to `true` only when Clerk keys are configured and the server should enforce Clerk auth.
 - `DATA_DIR`, optional explicit persistence directory
 - `TADO_TOKEN_FILE`, optional explicit tado token file path
 - `RAILWAY_VOLUME_MOUNT_PATH`, used as the default durable base path on Railway when present
@@ -109,7 +109,7 @@ Environment variables:
 ## Architecture
 
 - Browser code imports `src/window-watcher/functions.ts`, which defines TanStack Start server functions.
-- Clerk is wired through `src/start.ts` with conditional `clerkMiddleware()` and `src/routes/__root.tsx` with conditional `ClerkProvider`. Local auth is off by default; Railway auth is on by default.
+- Clerk is wired through `src/start.ts` with conditional `clerkMiddleware()` and `src/routes/__root.tsx` with conditional `ClerkProvider`. Auth is off by default, including on Railway, until `VITE_WINDOW_WATCHER_AUTH=true` or `WINDOW_WATCHER_AUTH=true` is set with valid Clerk keys.
 - The route can render a sign-in prompt publicly, but `getDashboardData` enforces authentication and a verified Google OAuth account matching `AUTHORIZED_EMAIL` before importing the private temperature server module.
 - Server functions dynamically import `src/window-watcher/server.ts`, which is marked `@tanstack/react-start/server-only`.
 - `server.ts` owns tado token refresh, Bright Sky DWD observation reads, Bright Sky/DWD forecast reads, recommendation logic, and JSONL history persistence.

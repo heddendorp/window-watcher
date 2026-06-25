@@ -11,15 +11,9 @@ export const getDashboardData = createServerFn({ method: "GET" }).handler(
 );
 
 function shouldRequireAuth() {
-	if (isRailwayRuntime()) return true;
-	return process.env.WINDOW_WATCHER_AUTH === "true";
-}
-
-function isRailwayRuntime() {
-	return Boolean(
-		process.env.RAILWAY_ENVIRONMENT_ID ||
-			process.env.RAILWAY_PROJECT_ID ||
-			process.env.RAILWAY_SERVICE_ID,
+	return (
+		process.env.WINDOW_WATCHER_AUTH === "true" ||
+		process.env.VITE_WINDOW_WATCHER_AUTH === "true"
 	);
 }
 
