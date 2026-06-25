@@ -19,6 +19,7 @@ Important local files:
 
 - `.tado-token.json`: local tado OAuth token, ignored by git
 - `data/temperature-history.jsonl`: persistent temperature history, ignored by git
+- `SAMPLE_INTERVAL_MS`: optional sampler override; defaults to one minute locally and five minutes on Railway.
 
 Authentication:
 
@@ -40,7 +41,7 @@ pnpm run start
 
 ## Deploy
 
-Railway is represented by `nixpacks.toml`. The service should run as an always-on web service because Window Watcher records every minute; Railway cron jobs currently have a five-minute minimum and are better suited only if lower-resolution sampling is acceptable.
+Railway is represented by `nixpacks.toml`. The service should run as an always-on web service so the dashboard remains available; production sampling defaults to every five minutes on Railway.
 
 Railway setup:
 
@@ -48,7 +49,7 @@ Railway setup:
 2. Add `VITE_WINDOW_WATCHER_AUTH=true`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `AUTHORIZED_EMAIL` as Railway variables.
 3. In Clerk, enable Google sign-in and add the Railway production domain to the allowed production URLs/redirect configuration for the Clerk application.
 4. Add the location/tado variables from `.env.example` as needed.
-5. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH` to the mount path. The app stores `temperature-history.jsonl` and `.tado-token.json` below that path.
+5. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH` to the mount path. The app stores `temperature-history.jsonl` and `.tado-token.json` below that path. For first boot, set `TADO_TOKEN_JSON` as a secret Railway variable with the local tado token JSON; after the first refresh, the volume-backed token file keeps future updates.
 6. Start command is `pnpm run start`, which launches the built server and starts the background sampler immediately.
 
 Railway does not replace app-level auth here. Its "Login with Railway" feature is for letting applications authenticate Railway users and access Railway resources, while this dashboard needs Google sign-in for one private user. Clerk is the cleaner fit and is also one of Railway's documented frontend-auth options.

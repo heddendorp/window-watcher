@@ -21,6 +21,9 @@ const LEGACY_TOKEN_FILE = path.join(ROOT, ".tado-token.json");
 const HISTORY_FILE = path.join(DATA_DIR, "temperature-history.jsonl");
 const TADO_CLIENT_ID = "1bb50063-6b0c-4d11-bd99-387f4a91cc46";
 const CACHE_MS = 55 * 1000;
+const DEFAULT_SAMPLE_INTERVAL_MS = process.env.RAILWAY_ENVIRONMENT_ID
+	? 5 * 60 * 1000
+	: 60 * 1000;
 
 loadEnv();
 
@@ -32,7 +35,9 @@ const config = {
 	zoneId: process.env.TADO_ZONE_ID || "",
 	coolingMarginC: Number(process.env.COOLING_MARGIN_C || 2),
 	requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 5000),
-	sampleIntervalMs: Number(process.env.SAMPLE_INTERVAL_MS || 60 * 1000),
+	sampleIntervalMs: Number(
+		process.env.SAMPLE_INTERVAL_MS || DEFAULT_SAMPLE_INTERVAL_MS,
+	),
 	outdoorTrendHours: Number(process.env.OUTDOOR_TREND_HOURS || 3),
 	outdoorTrendDeltaC: Number(process.env.OUTDOOR_TREND_DELTA_C || 0.3),
 };
@@ -120,13 +125,18 @@ async function readToken() {
 				) as TadoToken;
 			} catch (legacyError) {
 				if ((legacyError as NodeJS.ErrnoException).code === "ENOENT") {
-					return null;
+					return readTokenFromEnvironment();
 				}
 				throw legacyError;
 			}
 		}
 		throw error;
 	}
+}
+
+function readTokenFromEnvironment() {
+	if (!process.env.TADO_TOKEN_JSON) return null;
+	return JSON.parse(process.env.TADO_TOKEN_JSON) as TadoToken;
 }
 
 async function writeToken(token: TadoToken) {
