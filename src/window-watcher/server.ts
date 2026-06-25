@@ -27,6 +27,8 @@ const DEFAULT_SAMPLE_INTERVAL_MS = process.env.RAILWAY_ENVIRONMENT_ID
 	: 60 * 1000;
 const DEFAULT_WEATHER_CACHE_MS = 4 * 60 * 1000;
 const DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
+const DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
+const TADO_TOPOLOGY_CACHE_MS = 60 * 60 * 1000;
 
 loadEnv();
 
@@ -51,6 +53,10 @@ const config = {
 		process.env.WEATHER_RATE_LIMIT_BACKOFF_MS ||
 			DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS,
 	),
+	tadoRateLimitBackoffMs: Number(
+		process.env.TADO_RATE_LIMIT_BACKOFF_MS ||
+			DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS,
+	),
 };
 
 let refreshInFlight: Promise<TadoToken> | null = null;
@@ -61,6 +67,12 @@ let lastSampleError: { key: string; loggedAt: number } | null = null;
 let outsideWeatherCache: { createdAt: number; data: OutsideWeather } | null =
 	null;
 let weatherRateLimitUntil = 0;
+let tadoRateLimitUntil = 0;
+let tadoTopologyCache: {
+	createdAt: number;
+	homeId: number | string;
+	zones: Array<{ id: number | string; name: string; type?: string }>;
+} | null = null;
 const tadoDeviceFlows = new Map<string, TadoDeviceFlow>();
 
 type TadoToken = {
@@ -399,11 +411,20 @@ async function refreshToken(refreshTokenValue: string) {
 async function tadoApi<T>(pathname: string) {
 	const token = await getAccessToken();
 	return requestJson<T>(`https://my.tado.com/api/v2${pathname}`, {
+		errorContext: "tado",
 		headers: { Authorization: `Bearer ${token}` },
 	});
 }
 
-async function resolveTadoRooms() {
+async function resolveTadoTopology() {
+	const now = Date.now();
+	if (
+		tadoTopologyCache &&
+		now - tadoTopologyCache.createdAt < TADO_TOPOLOGY_CACHE_MS
+	) {
+		return tadoTopologyCache;
+	}
+
 	const me = await tadoApi<{ homes?: Array<{ id: number | string }> }>("/me");
 	const homeId = config.homeId || me.homes?.[0]?.id;
 
@@ -412,34 +433,50 @@ async function resolveTadoRooms() {
 	const zones = await tadoApi<
 		Array<{ id: number | string; name: string; type?: string }>
 	>(`/homes/${encodeURIComponent(homeId)}/zones`);
+	const topology = { createdAt: now, homeId, zones };
+	tadoTopologyCache = topology;
+	return topology;
+}
+
+async function resolveTadoRooms() {
+	if (Date.now() < tadoRateLimitUntil) {
+		throw Object.assign(new Error("tado is rate limited."), {
+			status: 429,
+			provider: "tado",
+		});
+	}
+
+	const { homeId, zones } = await resolveTadoTopology();
 	const selectedZones = config.zoneId
 		? zones.filter((zone) => String(zone.id) === String(config.zoneId))
 		: zones;
 
-	const roomResults = await Promise.all(
-		selectedZones.map(async (zone) => {
-			const state = await tadoApi<{
-				sensorDataPoints?: {
-					insideTemperature?: { celsius?: number };
-					humidity?: { percentage?: number };
-				};
-			}>(
-				`/homes/${encodeURIComponent(homeId)}/zones/${encodeURIComponent(zone.id)}/state`,
-			);
-			const temperatureC = state.sensorDataPoints?.insideTemperature?.celsius;
+	const roomResults = [];
+	for (const zone of selectedZones) {
+		const state = await tadoApi<{
+			sensorDataPoints?: {
+				insideTemperature?: { celsius?: number };
+				humidity?: { percentage?: number };
+			};
+		}>(
+			`/homes/${encodeURIComponent(homeId)}/zones/${encodeURIComponent(zone.id)}/state`,
+		);
+		const temperatureC = state.sensorDataPoints?.insideTemperature?.celsius;
 
-			if (temperatureC == null) return null;
+		if (temperatureC == null) {
+			roomResults.push(null);
+			continue;
+		}
 
-			return {
-				homeId,
-				zoneId: zone.id,
-				zoneName: zone.name,
-				type: zone.type,
-				temperatureC,
-				humidityPercent: state.sensorDataPoints?.humidity?.percentage,
-			} satisfies TadoRoom;
-		}),
-	);
+		roomResults.push({
+			homeId,
+			zoneId: zone.id,
+			zoneName: zone.name,
+			type: zone.type,
+			temperatureC,
+			humidityPercent: state.sensorDataPoints?.humidity?.percentage,
+		} satisfies TadoRoom);
+	}
 
 	const rooms = roomResults.filter((room): room is TadoRoom => room != null);
 	if (!rooms.length) {
@@ -449,6 +486,17 @@ async function resolveTadoRooms() {
 	}
 
 	return { homeId, rooms };
+}
+
+async function readTadoRoomsWithRateLimitBackoff() {
+	try {
+		return await resolveTadoRooms();
+	} catch (error) {
+		if (isHttpError(error, 429)) {
+			tadoRateLimitUntil = Date.now() + config.tadoRateLimitBackoffMs;
+		}
+		throw error;
+	}
 }
 
 async function fetchOutsideWeather() {
@@ -1122,7 +1170,7 @@ async function collectFreshCoolingStatus() {
 		Math.ceil(config.outdoorTrendHours * 60),
 	);
 	const [target, outside] = await Promise.all([
-		resolveTadoRooms(),
+		readTadoRoomsWithRateLimitBackoff(),
 		readOutsideWeatherWithFallback(previousHistory),
 	]);
 	const outsideC = outside.current?.temperatureC;

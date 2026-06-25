@@ -214,7 +214,7 @@ function Dashboard({
 						</div>
 						{status.stale ? (
 							<p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-								Fresh readings failed: {status.staleReason}
+								{formatStaleReason(status.staleReason)}
 							</p>
 						) : null}
 						{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
@@ -559,11 +559,30 @@ function TadoReconnectPanel() {
 function shouldShowTadoReconnect(status: DashboardData["status"]) {
 	if (!status.stale) return false;
 	const reason = status.staleReason?.toLowerCase() || "";
+	if (
+		reason.includes("429") ||
+		reason.includes("rate limit") ||
+		reason.includes("rate-limited")
+	) {
+		return false;
+	}
 	return (
 		reason.includes("tado") ||
 		reason.includes("refresh_token") ||
 		reason.includes("token")
 	);
+}
+
+function formatStaleReason(reason: string | undefined) {
+	const normalized = reason?.toLowerCase() || "";
+	if (
+		normalized.includes("429") ||
+		normalized.includes("rate limit") ||
+		normalized.includes("rate-limited")
+	) {
+		return "Temporarily rate limited; showing the last saved readings.";
+	}
+	return `Fresh readings failed: ${reason || "temporarily unavailable"}`;
 }
 
 function RoomCard({
