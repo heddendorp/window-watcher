@@ -30,5 +30,7 @@ async function startSampler() {
 	throw new Error("Could not find Window Watcher sampler entrypoint.");
 }
 
-await startSampler();
+if (process.env.BACKGROUND_SAMPLER !== "false") {
+	await startSampler();
+}
 await import("../.output/server/index.mjs");
