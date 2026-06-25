@@ -50,8 +50,8 @@ Railway setup:
 3. In Clerk, enable Google sign-in and add the Railway production domain to the allowed production URLs/redirect configuration for the Clerk application.
 4. Add the location/tado variables from `.env.example` as needed.
 5. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH` to the mount path. The app stores `temperature-history.jsonl` and `.tado-token.json` below that path. For first boot, set `TADO_TOKEN_JSON` as a secret Railway variable with the local tado token JSON; after the first refresh, the volume-backed token file keeps future updates.
-6. Start command is `pnpm run start`, which launches the built server and starts the background sampler immediately.
+6. Start command is `pnpm run start`. For Railway Serverless/App Sleeping, set `BACKGROUND_SAMPLER=false` on the web service and use the `POST /api/sample` cron service to record samples.
 
 Railway does not replace app-level auth here. Its "Login with Railway" feature is for letting applications authenticate Railway users and access Railway resources, while this dashboard needs Google sign-in for one private user. Clerk is the cleaner fit and is also one of Railway's documented frontend-auth options.
 
-The app uses generated shadcn UI components for controls, including the chart range buttons. It also reads Open-Meteo hourly forecast data so it can show when a useful cooling window is expected soon.
+The app uses generated shadcn UI components for controls, including the chart range buttons. It reads Bright Sky DWD observations for current outdoor temperature and Bright Sky/DWD forecast data so it can show when a useful cooling window is expected soon.

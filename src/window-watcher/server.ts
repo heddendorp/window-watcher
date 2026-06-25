@@ -65,6 +65,42 @@ type TadoRoom = {
 	humidityPercent?: number;
 };
 
+type WeatherSource = {
+	id?: number;
+	dwd_station_id?: string;
+	observation_type?: string;
+	lat?: number;
+	lon?: number;
+	station_name?: string;
+	wmo_station_id?: string;
+	distance?: number;
+};
+
+type OutsideWeather = {
+	current?: {
+		temperatureC?: number;
+		humidityPercent?: number;
+		observedAt?: string;
+		source?: {
+			name: string;
+			stationName?: string;
+			distanceMeters?: number;
+		};
+	};
+	forecast?: {
+		source?: {
+			name: string;
+			stationName?: string;
+			distanceMeters?: number;
+		};
+		points: Array<{
+			time: string;
+			timestamp: number;
+			temperatureC: number;
+		}>;
+	};
+};
+
 function loadEnv() {
 	try {
 		const raw = readFileSync(path.join(ROOT, ".env"), "utf8");
@@ -245,25 +281,99 @@ async function resolveTadoRooms() {
 }
 
 async function fetchOutsideWeather() {
-	const params = new URLSearchParams({
-		latitude: String(config.latitude),
-		longitude: String(config.longitude),
-		current: "temperature_2m,relative_humidity_2m,weather_code",
-		hourly: "temperature_2m",
-		forecast_hours: "5",
-		timezone: "Europe/Berlin",
+	const now = new Date();
+	const forecastEnd = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+	const currentParams = new URLSearchParams({
+		lat: String(config.latitude),
+		lon: String(config.longitude),
+	});
+	const forecastParams = new URLSearchParams({
+		lat: String(config.latitude),
+		lon: String(config.longitude),
+		date: now.toISOString(),
+		last_date: forecastEnd.toISOString(),
 	});
 
-	return requestJson<{
-		current?: {
-			temperature_2m?: number;
-			relative_humidity_2m?: number;
-		};
-		hourly?: {
-			time?: Array<string>;
-			temperature_2m?: Array<number>;
-		};
-	}>(`https://api.open-meteo.com/v1/forecast?${params.toString()}`);
+	const [current, forecast] = await Promise.all([
+		requestJson<{
+			weather?: {
+				source_id?: number;
+				timestamp?: string;
+				temperature?: number;
+				relative_humidity?: number;
+			};
+			sources?: Array<WeatherSource>;
+		}>(`https://api.brightsky.dev/current_weather?${currentParams.toString()}`),
+		requestJson<{
+			weather?: Array<{
+				source_id?: number;
+				timestamp?: string;
+				temperature?: number;
+			}>;
+			sources?: Array<WeatherSource>;
+		}>(`https://api.brightsky.dev/weather?${forecastParams.toString()}`),
+	]);
+
+	const currentSource = findWeatherSource(
+		current.sources,
+		current.weather?.source_id,
+	);
+	const forecastSource = findWeatherSource(
+		forecast.sources,
+		forecast.weather?.find((point) => point.source_id != null)?.source_id,
+	);
+
+	return {
+		current: {
+			temperatureC: current.weather?.temperature,
+			humidityPercent: current.weather?.relative_humidity,
+			observedAt: current.weather?.timestamp,
+			source: describeWeatherSource(
+				"Bright Sky DWD observation",
+				currentSource,
+			),
+		},
+		forecast: {
+			source: describeWeatherSource("Bright Sky DWD forecast", forecastSource),
+			points: (forecast.weather || [])
+				.map((point) => ({
+					time: point.timestamp || "",
+					timestamp: new Date(point.timestamp || "").getTime(),
+					temperatureC: point.temperature,
+				}))
+				.filter(
+					(
+						point,
+					): point is {
+						time: string;
+						timestamp: number;
+						temperatureC: number;
+					} =>
+						Boolean(point.time) &&
+						Number.isFinite(point.timestamp) &&
+						Number.isFinite(point.temperatureC),
+				),
+		},
+	} satisfies OutsideWeather;
+}
+
+function findWeatherSource(
+	sources: Array<WeatherSource> | undefined,
+	sourceId: number | undefined,
+) {
+	if (sourceId == null) return sources?.[0];
+	return sources?.find((source) => source.id === sourceId) || sources?.[0];
+}
+
+function describeWeatherSource(
+	name: string,
+	source: WeatherSource | undefined,
+) {
+	return {
+		name,
+		stationName: source?.station_name,
+		distanceMeters: source?.distance,
+	};
 }
 
 function buildVerdict(insideC: number, outsideC: number, roomName = "inside") {
@@ -339,28 +449,16 @@ function analyzeOutdoorTrend(
 }
 
 function analyzeForecast(
-	outside: Awaited<ReturnType<typeof fetchOutsideWeather>>,
+	outside: OutsideWeather,
 	outsideC: number,
 	checkedAt: string,
 ) {
 	const checkedTime = new Date(checkedAt).getTime();
 	const horizonHours = 4;
 	const horizonEnd = checkedTime + horizonHours * 60 * 60 * 1000;
-	const times = outside.hourly?.time || [];
-	const temperatures = outside.hourly?.temperature_2m || [];
-	const points = times
-		.map((time, index) => ({
-			time,
-			timestamp: new Date(time).getTime(),
-			temperatureC: temperatures[index],
-		}))
-		.filter(
-			(point) =>
-				Number.isFinite(point.timestamp) &&
-				Number.isFinite(point.temperatureC) &&
-				point.timestamp >= checkedTime &&
-				point.timestamp <= horizonEnd,
-		);
+	const points = (outside.forecast?.points || []).filter(
+		(point) => point.timestamp >= checkedTime && point.timestamp <= horizonEnd,
+	);
 
 	if (!points.length) return undefined;
 
@@ -373,6 +471,7 @@ function analyzeForecast(
 		minTemperatureC: Number(coolest.temperatureC),
 		minAt: coolest.time,
 		changeC: Number(coolest.temperatureC) - outsideC,
+		source: outside.forecast?.source,
 		points,
 	};
 }
@@ -493,6 +592,11 @@ function buildTrendVerdict(
 						changeC: forecast.changeC,
 						reachesThresholdAt,
 						summary: forecastSummary,
+						source: forecast.source,
+						points: forecast.points.map((point) => ({
+							time: point.time,
+							temperatureC: point.temperatureC,
+						})),
 					}
 				: undefined,
 		};
@@ -524,6 +628,11 @@ function buildTrendVerdict(
 						changeC: forecast.changeC,
 						reachesThresholdAt,
 						summary: forecastSummary,
+						source: forecast.source,
+						points: forecast.points.map((point) => ({
+							time: point.time,
+							temperatureC: point.temperatureC,
+						})),
 					}
 				: undefined,
 		};
@@ -546,6 +655,11 @@ function buildTrendVerdict(
 						changeC: forecast.changeC,
 						reachesThresholdAt,
 						summary: forecastSummary,
+						source: forecast.source,
+						points: forecast.points.map((point) => ({
+							time: point.time,
+							temperatureC: point.temperatureC,
+						})),
 					}
 				: undefined,
 		};
@@ -568,6 +682,11 @@ function buildTrendVerdict(
 						changeC: forecast.changeC,
 						reachesThresholdAt,
 						summary: forecastSummary,
+						source: forecast.source,
+						points: forecast.points.map((point) => ({
+							time: point.time,
+							temperatureC: point.temperatureC,
+						})),
 					}
 				: undefined,
 		};
@@ -589,6 +708,11 @@ function buildTrendVerdict(
 					changeC: forecast.changeC,
 					reachesThresholdAt,
 					summary: forecastSummary,
+					source: forecast.source,
+					points: forecast.points.map((point) => ({
+						time: point.time,
+						temperatureC: point.temperatureC,
+					})),
 				}
 			: undefined,
 	};
@@ -685,6 +809,8 @@ function buildStatusFromHistoryEntry(
 		outside: {
 			temperatureC: outsideC,
 			humidityPercent: entry.outside.humidityPercent,
+			observedAt: entry.outside.observedAt,
+			source: entry.outside.source,
 		},
 		recommendation: entry.recommendation || {
 			outdoorTrend: {
@@ -708,7 +834,7 @@ async function collectFreshCoolingStatus() {
 		resolveTadoRooms(),
 		fetchOutsideWeather(),
 	]);
-	const outsideC = outside.current?.temperature_2m;
+	const outsideC = outside.current?.temperatureC;
 
 	if (outsideC == null) throw new Error("Could not read outside temperature.");
 
@@ -752,7 +878,9 @@ async function collectFreshCoolingStatus() {
 		rooms,
 		outside: {
 			temperatureC: outsideC,
-			humidityPercent: outside.current?.relative_humidity_2m,
+			humidityPercent: outside.current?.humidityPercent,
+			observedAt: outside.current?.observedAt,
+			source: outside.current?.source,
 		},
 		recommendation: {
 			outdoorTrend: trend,

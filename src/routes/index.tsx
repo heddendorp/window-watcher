@@ -26,6 +26,7 @@ type RangeMode = "4h" | "16h" | "24h" | "48h" | "week";
 
 const roomColors = ["#0f8b5f", "#b03a2e", "#a56b00", "#6750a4", "#b35c14"];
 const outsideColor = "#1f789d";
+const outsideForecastColor = "#8bbbd0";
 const mainChartCurveType = "basis";
 const sparklineCurveType = mainChartCurveType;
 const sparklineRiseColor = "#d23f36";
@@ -144,9 +145,13 @@ function Dashboard({
 		() => createHistoryCollection(history),
 		[history],
 	);
+	const filteredHistory = useMemo(
+		() => filterHistory(history, rangeMode),
+		[history, rangeMode],
+	);
 	const chartRows = useMemo(
-		() => buildChartRows(filterHistory(history, rangeMode), status.rooms),
-		[history, rangeMode, status.rooms],
+		() => buildChartRows(filteredHistory, status.rooms, status),
+		[filteredHistory, status],
 	);
 	const chartScale = useMemo(
 		() => buildTemperatureScale(chartRows, status.rooms),
@@ -154,6 +159,7 @@ function Dashboard({
 	);
 	const legendItems = [
 		{ label: "Outside", color: outsideColor },
+		{ label: "30 min forecast", color: outsideForecastColor },
 		...status.rooms.map((room, index) => ({
 			label: room.zoneName,
 			color: roomColors[index % roomColors.length],
@@ -235,7 +241,7 @@ function Dashboard({
 							Temperature Trends
 						</h2>
 						<p className="mt-1 text-sm font-medium text-slate-600">
-							{rangeMode} · {chartRows.length} saved measurements
+							{rangeMode} · {filteredHistory.length} saved measurements
 						</p>
 					</div>
 					<div className="range-scroll flex w-full gap-1 overflow-x-auto rounded-md border border-slate-200 bg-white p-1 sm:w-auto">
@@ -303,6 +309,16 @@ function Dashboard({
 								stroke={outsideColor}
 								strokeWidth={3}
 								type={mainChartCurveType}
+							/>
+							<Line
+								connectNulls={false}
+								dataKey="outsideForecast"
+								dot={false}
+								name="30 min forecast"
+								stroke={outsideForecastColor}
+								strokeDasharray="5 5"
+								strokeWidth={2.5}
+								type="monotone"
 							/>
 							{status.rooms.map((room, index) => (
 								<Line
@@ -557,12 +573,14 @@ function filterHistory(
 function buildChartRows(
 	history: Array<TemperatureHistoryEntry>,
 	rooms: Array<RoomReading>,
+	status: DashboardData["status"],
 ) {
-	return history.map((entry) => {
+	const rows = history.map((entry) => {
 		const row: Record<string, number | string | null> = {
 			time: entry.checkedAt,
 			label: formatTime(new Date(entry.checkedAt)),
 			outside: entry.outside?.temperatureC ?? null,
+			outsideForecast: null,
 		};
 
 		for (const room of rooms) {
@@ -574,13 +592,65 @@ function buildChartRows(
 
 		return row;
 	});
+
+	const forecastRows = buildThirtyMinuteForecastRows(status, rooms);
+	return [...rows, ...forecastRows];
+}
+
+function buildThirtyMinuteForecastRows(
+	status: DashboardData["status"],
+	rooms: Array<RoomReading>,
+) {
+	const nextPoint = status.recommendation.forecast?.points?.find(
+		(point) =>
+			new Date(point.time).getTime() > new Date(status.checkedAt).getTime(),
+	);
+	if (!nextPoint) return [];
+
+	const checkedTime = new Date(status.checkedAt).getTime();
+	const nextTime = new Date(nextPoint.time).getTime();
+	const forecastTime = checkedTime + 30 * 60 * 1000;
+	if (!Number.isFinite(nextTime) || nextTime <= checkedTime) return [];
+
+	const progress = Math.min(
+		1,
+		(forecastTime - checkedTime) / (nextTime - checkedTime),
+	);
+	const forecastTemperature =
+		status.outside.temperatureC +
+		(nextPoint.temperatureC - status.outside.temperatureC) * progress;
+
+	const emptyRooms = Object.fromEntries(
+		rooms.map((room) => [`room-${room.zoneId}`, null]),
+	);
+
+	return [
+		{
+			time: status.checkedAt,
+			label: formatTime(new Date(status.checkedAt)),
+			outside: null,
+			outsideForecast: status.outside.temperatureC,
+			...emptyRooms,
+		},
+		{
+			time: new Date(forecastTime).toISOString(),
+			label: formatTime(new Date(forecastTime)),
+			outside: null,
+			outsideForecast: forecastTemperature,
+			...emptyRooms,
+		},
+	];
 }
 
 function buildTemperatureScale(
 	rows: Array<Record<string, number | string | null>>,
 	rooms: Array<RoomReading>,
 ) {
-	const keys = ["outside", ...rooms.map((room) => `room-${room.zoneId}`)];
+	const keys = [
+		"outside",
+		"outsideForecast",
+		...rooms.map((room) => `room-${room.zoneId}`),
+	];
 	const values = rows.flatMap((row) =>
 		keys
 			.map((key) => row[key])

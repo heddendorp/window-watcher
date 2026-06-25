@@ -37,6 +37,12 @@ export type TemperatureHistoryEntry = {
 	outside?: {
 		temperatureC?: number;
 		humidityPercent?: number;
+		observedAt?: string;
+		source?: {
+			name: string;
+			stationName?: string;
+			distanceMeters?: number;
+		};
 	};
 	rooms: Array<
 		Pick<
@@ -78,6 +84,12 @@ export type CoolingStatus = {
 	outside: {
 		temperatureC: number;
 		humidityPercent?: number;
+		observedAt?: string;
+		source?: {
+			name: string;
+			stationName?: string;
+			distanceMeters?: number;
+		};
 	};
 	recommendation: {
 		outdoorTrend: {
@@ -93,6 +105,15 @@ export type CoolingStatus = {
 			changeC?: number;
 			reachesThresholdAt?: string;
 			summary?: string;
+			source?: {
+				name: string;
+				stationName?: string;
+				distanceMeters?: number;
+			};
+			points?: Array<{
+				time: string;
+				temperatureC: number;
+			}>;
 		};
 		strategy: string;
 		thresholdC: number;
