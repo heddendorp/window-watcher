@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 
+import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -47,6 +48,8 @@ let refreshInFlight: Promise<TadoToken> | null = null;
 let sampleInFlight: Promise<CoolingStatus | null> | null = null;
 let statusCache: { createdAt: number; data: CoolingStatus } | null = null;
 let samplerStarted = false;
+let lastSampleError: { key: string; loggedAt: number } | null = null;
+const tadoDeviceFlows = new Map<string, TadoDeviceFlow>();
 
 type TadoToken = {
 	access_token?: string;
@@ -54,6 +57,15 @@ type TadoToken = {
 	expires_at?: number;
 	expires_in?: number;
 	token_type?: string;
+};
+
+type TadoDeviceFlow = {
+	deviceCode: string;
+	userCode: string;
+	verificationUri: string;
+	verificationUriComplete: string;
+	expiresAt: number;
+	intervalSeconds: number;
 };
 
 type TadoRoom = {
@@ -149,6 +161,134 @@ async function requestJson<T>(url: string, options: RequestInit = {}) {
 	}
 
 	return data as T;
+}
+
+function assertLocalTadoReconnectAllowed() {
+	if (
+		process.env.RAILWAY_ENVIRONMENT_ID ||
+		process.env.NODE_ENV === "production"
+	) {
+		throw Object.assign(
+			new Error("tado reconnect is only available on the local dev server."),
+			{ status: 403 },
+		);
+	}
+}
+
+export async function startLocalTadoReconnect() {
+	assertLocalTadoReconnectAllowed();
+
+	const response = await requestJson<{
+		device_code: string;
+		user_code: string;
+		verification_uri: string;
+		verification_uri_complete?: string;
+		expires_in?: number;
+		interval?: number;
+	}>("https://login.tado.com/oauth2/device_authorize", {
+		method: "POST",
+		body: new URLSearchParams({
+			client_id: TADO_CLIENT_ID,
+			scope: "offline_access home.user",
+		}),
+		headers: {
+			"content-type": "application/x-www-form-urlencoded",
+		},
+	});
+
+	const flowId = crypto.randomUUID();
+	const expiresAt = Date.now() + Number(response.expires_in || 300) * 1000;
+	const flow = {
+		deviceCode: response.device_code,
+		userCode: response.user_code,
+		verificationUri: response.verification_uri,
+		verificationUriComplete:
+			response.verification_uri_complete ||
+			`${response.verification_uri}?user_code=${encodeURIComponent(response.user_code)}`,
+		expiresAt,
+		intervalSeconds: Number(response.interval || 5),
+	};
+
+	tadoDeviceFlows.set(flowId, flow);
+
+	return {
+		flowId,
+		userCode: flow.userCode,
+		verificationUri: flow.verificationUri,
+		verificationUriComplete: flow.verificationUriComplete,
+		expiresAt: new Date(flow.expiresAt).toISOString(),
+		intervalSeconds: flow.intervalSeconds,
+	};
+}
+
+export async function pollLocalTadoReconnect(flowId: string) {
+	assertLocalTadoReconnectAllowed();
+
+	const flow = tadoDeviceFlows.get(flowId);
+	if (!flow) {
+		return {
+			status: "expired" as const,
+			message: "Start a new tado reconnect flow.",
+		};
+	}
+
+	if (Date.now() > flow.expiresAt) {
+		tadoDeviceFlows.delete(flowId);
+		return {
+			status: "expired" as const,
+			message: "The tado login code expired. Start a new one.",
+		};
+	}
+
+	try {
+		const token = await requestJson<TadoToken>(
+			"https://login.tado.com/oauth2/token",
+			{
+				method: "POST",
+				body: new URLSearchParams({
+					client_id: TADO_CLIENT_ID,
+					grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+					device_code: flow.deviceCode,
+				}),
+				headers: {
+					"content-type": "application/x-www-form-urlencoded",
+				},
+			},
+		);
+
+		if (!token.refresh_token) {
+			throw new Error(
+				"tado authorized the login but did not return a refresh token.",
+			);
+		}
+
+		await writeToken(token);
+		tadoDeviceFlows.delete(flowId);
+		statusCache = null;
+
+		return {
+			status: "connected" as const,
+			message: "tado is connected locally.",
+		};
+	} catch (error) {
+		const details = (error as { details?: { error?: string } }).details;
+		if (details?.error === "authorization_pending") {
+			return {
+				status: "pending" as const,
+				message: "Waiting for tado approval.",
+			};
+		}
+
+		if (details?.error === "slow_down") {
+			flow.intervalSeconds += 5;
+			return {
+				status: "pending" as const,
+				message: "Waiting for tado approval.",
+			};
+		}
+
+		throw error;
+	}
 }
 
 async function readToken() {
@@ -282,6 +422,7 @@ async function resolveTadoRooms() {
 
 async function fetchOutsideWeather() {
 	const now = new Date();
+	const forecastStart = startOfHour(new Date(now.getTime() - 30 * 60 * 1000));
 	const forecastEnd = new Date(now.getTime() + 5 * 60 * 60 * 1000);
 	const currentParams = new URLSearchParams({
 		lat: String(config.latitude),
@@ -290,7 +431,7 @@ async function fetchOutsideWeather() {
 	const forecastParams = new URLSearchParams({
 		lat: String(config.latitude),
 		lon: String(config.longitude),
-		date: now.toISOString(),
+		date: forecastStart.toISOString(),
 		last_date: forecastEnd.toISOString(),
 	});
 
@@ -355,6 +496,12 @@ async function fetchOutsideWeather() {
 				),
 		},
 	} satisfies OutsideWeather;
+}
+
+function startOfHour(date: Date) {
+	const rounded = new Date(date);
+	rounded.setMinutes(0, 0, 0);
+	return rounded;
 }
 
 function findWeatherSource(
@@ -456,13 +603,19 @@ function analyzeForecast(
 	const checkedTime = new Date(checkedAt).getTime();
 	const horizonHours = 4;
 	const horizonEnd = checkedTime + horizonHours * 60 * 60 * 1000;
+	const chartStart = startOfHour(
+		new Date(checkedTime - 30 * 60 * 1000),
+	).getTime();
 	const points = (outside.forecast?.points || []).filter(
+		(point) => point.timestamp >= chartStart && point.timestamp <= horizonEnd,
+	);
+	const actionablePoints = points.filter(
 		(point) => point.timestamp >= checkedTime && point.timestamp <= horizonEnd,
 	);
 
-	if (!points.length) return undefined;
+	if (!actionablePoints.length) return undefined;
 
-	const coolest = points.reduce((best, point) =>
+	const coolest = actionablePoints.reduce((best, point) =>
 		point.temperatureC < best.temperatureC ? point : best,
 	);
 
@@ -473,6 +626,7 @@ function analyzeForecast(
 		changeC: Number(coolest.temperatureC) - outsideC,
 		source: outside.forecast?.source,
 		points,
+		actionablePoints,
 	};
 }
 
@@ -480,8 +634,9 @@ function findThresholdTime(
 	forecast: ReturnType<typeof analyzeForecast>,
 	thresholdC: number,
 ) {
-	return forecast?.points.find((point) => point.temperatureC <= thresholdC)
-		?.time;
+	return forecast?.actionablePoints.find(
+		(point) => point.temperatureC <= thresholdC,
+	)?.time;
 }
 
 function buildForecastSummary(
@@ -911,7 +1066,7 @@ async function sampleCoolingStatus(reason = "interval") {
 			return status;
 		})
 		.catch(async (error: Error) => {
-			console.error(`[window-watcher:${reason}] ${error.message}`);
+			logSampleError(reason, error);
 			const history = await readHistory(1);
 			const fallback = buildStatusFromHistoryEntry(history.at(-1), error);
 			if (fallback) statusCache = { createdAt: Date.now(), data: fallback };
@@ -922,6 +1077,17 @@ async function sampleCoolingStatus(reason = "interval") {
 		});
 
 	return sampleInFlight;
+}
+
+function logSampleError(reason: string, error: Error) {
+	const key = `${reason}:${error.message}`;
+	const now = Date.now();
+	if (lastSampleError?.key === key && now - lastSampleError.loggedAt < 60_000) {
+		return;
+	}
+
+	lastSampleError = { key, loggedAt: now };
+	process.stderr.write(`[window-watcher:${reason}] ${error.message}\n`);
 }
 
 export async function recordCoolingStatusSample(reason = "manual") {

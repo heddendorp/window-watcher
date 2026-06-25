@@ -1,5 +1,6 @@
 import { auth, clerkClient } from "@clerk/tanstack-react-start/server";
 import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
 import type { DashboardData } from "./types";
 
 export const getDashboardData = createServerFn({ method: "GET" }).handler(
@@ -9,6 +10,20 @@ export const getDashboardData = createServerFn({ method: "GET" }).handler(
 		return getDashboardPayload();
 	},
 );
+
+export const startTadoReconnect = createServerFn({ method: "POST" }).handler(
+	async () => {
+		const { startLocalTadoReconnect } = await import("./server");
+		return startLocalTadoReconnect();
+	},
+);
+
+export const pollTadoReconnect = createServerFn({ method: "POST" })
+	.validator(z.object({ flowId: z.string().uuid() }))
+	.handler(async ({ data }) => {
+		const { pollLocalTadoReconnect } = await import("./server");
+		return pollLocalTadoReconnect(data.flowId);
+	});
 
 function shouldRequireAuth() {
 	return (

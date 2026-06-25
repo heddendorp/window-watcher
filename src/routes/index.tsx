@@ -1,7 +1,7 @@
 import { SignInButton, UserButton, useUser } from "@clerk/tanstack-react-start";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
 	CartesianGrid,
 	Line,
@@ -13,7 +13,11 @@ import {
 } from "recharts";
 import { Button } from "../components/ui/button";
 import { createHistoryCollection } from "../window-watcher/db";
-import { getDashboardData } from "../window-watcher/functions";
+import {
+	getDashboardData,
+	pollTadoReconnect,
+	startTadoReconnect,
+} from "../window-watcher/functions";
 import type {
 	DashboardData,
 	RoomReading,
@@ -33,6 +37,7 @@ const sparklineRiseColor = "#d23f36";
 const sparklineFallColor = "#0b8a61";
 const sparklineFlatColor = "#6f7c75";
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
+const localReconnectEnabled = import.meta.env.DEV;
 
 function App() {
 	if (authEnabled) return <AuthenticatedApp />;
@@ -140,6 +145,9 @@ function Dashboard({
 	setRangeMode: (mode: RangeMode) => void;
 }) {
 	const { status, history } = data;
+	const [activeChartLineKey, setActiveChartLineKey] = useState<string | null>(
+		null,
+	);
 	const latestAt = new Date(status.checkedAt);
 	const historyCollection = useMemo(
 		() => createHistoryCollection(history),
@@ -159,7 +167,7 @@ function Dashboard({
 	);
 	const legendItems = [
 		{ label: "Outside", color: outsideColor },
-		{ label: "30 min forecast", color: outsideForecastColor },
+		{ label: "2h forecast", color: outsideForecastColor },
 		...status.rooms.map((room, index) => ({
 			label: room.zoneName,
 			color: roomColors[index % roomColors.length],
@@ -208,6 +216,9 @@ function Dashboard({
 							<p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
 								Fresh readings failed: {status.staleReason}
 							</p>
+						) : null}
+						{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
+							<TadoReconnectPanel />
 						) : null}
 						{status.recommendation.forecast?.summary ? (
 							<p className="mt-2 text-sm font-semibold text-slate-700">
@@ -277,13 +288,25 @@ function Dashboard({
 						<LineChart
 							data={chartRows}
 							margin={{ top: 8, right: 18, bottom: 0, left: 0 }}
+							onMouseLeave={() => setActiveChartLineKey(null)}
+							onMouseMove={(nextState) => {
+								setActiveChartLineKey(
+									nextState.activeDataKey == null
+										? null
+										: String(nextState.activeDataKey),
+								);
+							}}
 						>
 							<CartesianGrid stroke="#d9e5de" vertical={false} />
 							<XAxis
-								dataKey="label"
+								dataKey="timestamp"
+								domain={["dataMin", "dataMax"]}
 								minTickGap={28}
+								scale="time"
 								stroke="#64746d"
+								tickFormatter={(value) => formatTime(new Date(value))}
 								tickLine={false}
+								type="number"
 							/>
 							<YAxis
 								domain={[chartScale.min, chartScale.max]}
@@ -299,7 +322,15 @@ function Dashboard({
 									border: "1px solid #d7e2dc",
 									boxShadow: "0 12px 30px rgba(15, 23, 42, 0.12)",
 								}}
+								cursor={
+									<ChartCrosshairCursor
+										activeDataKey={activeChartLineKey}
+										yMax={chartScale.max}
+										yMin={chartScale.min}
+									/>
+								}
 								formatter={(value) => `${Number(value).toFixed(1)} C`}
+								labelFormatter={(value) => formatTime(new Date(value))}
 							/>
 							<Line
 								connectNulls={false}
@@ -314,7 +345,7 @@ function Dashboard({
 								connectNulls={false}
 								dataKey="outsideForecast"
 								dot={false}
-								name="30 min forecast"
+								name="2h forecast"
 								stroke={outsideForecastColor}
 								strokeDasharray="5 5"
 								strokeWidth={2.5}
@@ -359,6 +390,182 @@ function Dashboard({
 	);
 }
 
+function ChartCrosshairCursor({
+	activeDataKey,
+	height,
+	left,
+	payload,
+	points,
+	top,
+	width,
+	yMax,
+	yMin,
+}: {
+	activeDataKey?: string | null;
+	height?: number;
+	left?: number;
+	payload?: Array<{ dataKey?: string | number; value?: unknown }>;
+	points?: Array<{ x?: number; y?: number }>;
+	top?: number;
+	width?: number;
+	yMax: number;
+	yMin: number;
+}) {
+	const x = points?.[0]?.x;
+	const chartTop = top ?? 0;
+	const chartLeft = left ?? 0;
+	const chartHeight = height ?? 0;
+	const chartWidth = width ?? 0;
+	const entry = payload?.find(
+		(item) =>
+			activeDataKey &&
+			String(item.dataKey) === activeDataKey &&
+			typeof item.value === "number",
+	);
+	const value = typeof entry?.value === "number" ? entry.value : null;
+
+	if (x == null || !chartHeight || !chartWidth || yMax <= yMin) {
+		return null;
+	}
+
+	const y =
+		value == null
+			? null
+			: chartTop + ((yMax - value) / (yMax - yMin)) * chartHeight;
+	const stroke = "#7f9188";
+
+	return (
+		<g className="recharts-tooltip-cursor" pointerEvents="none">
+			<line
+				stroke={stroke}
+				strokeDasharray="4 4"
+				strokeOpacity={0.7}
+				strokeWidth={1}
+				x1={x}
+				x2={x}
+				y1={chartTop}
+				y2={chartTop + chartHeight}
+			/>
+			{y == null ? null : (
+				<line
+					stroke={stroke}
+					strokeDasharray="4 4"
+					strokeOpacity={0.55}
+					strokeWidth={1}
+					x1={chartLeft}
+					x2={chartLeft + chartWidth}
+					y1={y}
+					y2={y}
+				/>
+			)}
+		</g>
+	);
+}
+
+type TadoReconnectFlow = Awaited<ReturnType<typeof startTadoReconnect>>;
+
+function TadoReconnectPanel() {
+	const queryClient = useQueryClient();
+	const [flow, setFlow] = useState<TadoReconnectFlow | null>(null);
+	const [message, setMessage] = useState<string | null>(null);
+
+	const startMutation = useMutation({
+		mutationFn: () => startTadoReconnect(),
+		onSuccess: (nextFlow) => {
+			setFlow(nextFlow);
+			setMessage("Approve the tado login, then this page will reconnect.");
+			window.open(nextFlow.verificationUriComplete, "_blank", "noopener");
+		},
+		onError: (error) => {
+			setMessage(
+				error instanceof Error ? error.message : "Could not start tado login.",
+			);
+		},
+	});
+
+	const pollMutation = useMutation({
+		mutationFn: (flowId: string) => pollTadoReconnect({ data: { flowId } }),
+		onSuccess: async (result) => {
+			setMessage(result.message);
+			if (result.status === "connected") {
+				setFlow(null);
+				await queryClient.invalidateQueries({
+					queryKey: ["window-watcher-dashboard"],
+				});
+			}
+			if (result.status === "expired") setFlow(null);
+		},
+		onError: (error) => {
+			setMessage(
+				error instanceof Error ? error.message : "Could not finish tado login.",
+			);
+		},
+	});
+
+	useEffect(() => {
+		if (!flow) return;
+
+		const interval = window.setInterval(() => {
+			if (!pollMutation.isPending) pollMutation.mutate(flow.flowId);
+		}, Math.max(3, flow.intervalSeconds) * 1000);
+
+		return () => window.clearInterval(interval);
+	}, [flow, pollMutation.isPending, pollMutation.mutate]);
+
+	return (
+		<div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-3">
+			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+				<div>
+					<p className="text-sm font-extrabold text-amber-950">
+						tado needs a local reconnect
+					</p>
+					<p className="mt-1 text-sm font-semibold text-amber-800">
+						{flow
+							? `Code ${flow.userCode} · expires ${formatTime(new Date(flow.expiresAt))}`
+							: "This only writes a token on your local dev server."}
+					</p>
+					{message ? (
+						<p className="mt-1 text-xs font-semibold text-amber-700">
+							{message}
+						</p>
+					) : null}
+				</div>
+				<div className="flex flex-wrap gap-2">
+					{flow ? (
+						<Button asChild size="sm" variant="outline">
+							<a
+								href={flow.verificationUriComplete}
+								rel="noreferrer"
+								target="_blank"
+							>
+								Open tado
+							</a>
+						</Button>
+					) : null}
+					<Button
+						disabled={startMutation.isPending}
+						onClick={() => startMutation.mutate()}
+						size="sm"
+						type="button"
+					>
+						{flow ? "New code" : "Reconnect tado"}
+					</Button>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+function shouldShowTadoReconnect(status: DashboardData["status"]) {
+	if (!status.stale) return false;
+	const reason = status.staleReason?.toLowerCase() || "";
+	return (
+		reason.includes("tado") ||
+		reason.includes("refresh_token") ||
+		reason.includes("token")
+	);
+}
+
 function RoomCard({
 	room,
 	history,
@@ -368,9 +575,10 @@ function RoomCard({
 }) {
 	const sparklinePoints = getRoomSparkline(history, room.zoneId);
 	const hourlyTrend = getRoomHourlyTrend(history, room.zoneId);
+	const trendClass = hourlyTrend?.direction || "steady";
 
 	return (
-		<article className={`room-card ${room.verdict.action}`}>
+		<article className={`room-card ${trendClass}`}>
 			<div className="px-4 pt-4">
 				<p className="text-xs font-extrabold uppercase text-slate-500">
 					{room.zoneName}
@@ -578,6 +786,7 @@ function buildChartRows(
 	const rows = history.map((entry) => {
 		const row: Record<string, number | string | null> = {
 			time: entry.checkedAt,
+			timestamp: new Date(entry.checkedAt).getTime(),
 			label: formatTime(new Date(entry.checkedAt)),
 			outside: entry.outside?.temperatureC ?? null,
 			outsideForecast: null,
@@ -593,53 +802,82 @@ function buildChartRows(
 		return row;
 	});
 
-	const forecastRows = buildThirtyMinuteForecastRows(status, rooms);
+	const forecastRows = buildTwoHourForecastRows(status, rooms);
 	return [...rows, ...forecastRows];
 }
 
-function buildThirtyMinuteForecastRows(
+function buildTwoHourForecastRows(
 	status: DashboardData["status"],
 	rooms: Array<RoomReading>,
 ) {
-	const nextPoint = status.recommendation.forecast?.points?.find(
-		(point) =>
-			new Date(point.time).getTime() > new Date(status.checkedAt).getTime(),
-	);
-	if (!nextPoint) return [];
-
 	const checkedTime = new Date(status.checkedAt).getTime();
-	const nextTime = new Date(nextPoint.time).getTime();
-	const forecastTime = checkedTime + 30 * 60 * 1000;
-	if (!Number.isFinite(nextTime) || nextTime <= checkedTime) return [];
+	const forecastStart = startOfHour(checkedTime - 30 * 60 * 1000);
+	const forecastEnd = forecastStart + 2 * 60 * 60 * 1000;
+	const forecastPoints = (status.recommendation.forecast?.points || [])
+		.map((point) => ({
+			time: new Date(point.time).getTime(),
+			temperatureC: point.temperatureC,
+		}))
+		.filter(
+			(point) =>
+				Number.isFinite(point.time) && Number.isFinite(point.temperatureC),
+		)
+		.sort((left, right) => left.time - right.time);
 
-	const progress = Math.min(
-		1,
-		(forecastTime - checkedTime) / (nextTime - checkedTime),
+	const startPoint =
+		getForecastPointAt(forecastPoints, forecastStart) ??
+		forecastPoints.find((point) => point.time >= forecastStart);
+	const endPoint =
+		getForecastPointAt(forecastPoints, forecastEnd) ??
+		forecastPoints.findLast((point) => point.time <= forecastEnd);
+
+	if (!startPoint || !endPoint || startPoint.time >= endPoint.time) return [];
+
+	const windowPoints = forecastPoints.filter(
+		(point) => point.time > startPoint.time && point.time < endPoint.time,
 	);
-	const forecastTemperature =
-		status.outside.temperatureC +
-		(nextPoint.temperatureC - status.outside.temperatureC) * progress;
+	const chartPoints = [startPoint, ...windowPoints, endPoint];
 
 	const emptyRooms = Object.fromEntries(
 		rooms.map((room) => [`room-${room.zoneId}`, null]),
 	);
 
-	return [
-		{
-			time: status.checkedAt,
-			label: formatTime(new Date(status.checkedAt)),
-			outside: null,
-			outsideForecast: status.outside.temperatureC,
-			...emptyRooms,
-		},
-		{
-			time: new Date(forecastTime).toISOString(),
-			label: formatTime(new Date(forecastTime)),
-			outside: null,
-			outsideForecast: forecastTemperature,
-			...emptyRooms,
-		},
-	];
+	return chartPoints.map((point) => ({
+		time: new Date(point.time).toISOString(),
+		timestamp: point.time,
+		label: formatTime(new Date(point.time)),
+		outside: null,
+		outsideForecast: point.temperatureC,
+		...emptyRooms,
+	}));
+}
+
+function startOfHour(time: number) {
+	const date = new Date(time);
+	date.setMinutes(0, 0, 0);
+	return date.getTime();
+}
+
+function getForecastPointAt(
+	points: Array<{ time: number; temperatureC: number }>,
+	targetTime: number,
+) {
+	if (!points.length || !Number.isFinite(targetTime)) return null;
+
+	const exact = points.find((point) => point.time === targetTime);
+	if (exact) return exact;
+
+	const before = points.findLast((point) => point.time < targetTime);
+	const after = points.find((point) => point.time > targetTime);
+	if (!before || !after) return null;
+
+	const progress = (targetTime - before.time) / (after.time - before.time);
+	return {
+		time: targetTime,
+		temperatureC:
+			before.temperatureC +
+			(after.temperatureC - before.temperatureC) * progress,
+	};
 }
 
 function buildTemperatureScale(

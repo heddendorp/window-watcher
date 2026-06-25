@@ -186,19 +186,19 @@ button {
 	display: none;
 }
 
-.room-card.open {
+.room-card.falling {
   border-color: #9bd2bd;
   background: #fbfffd;
 }
 
-.room-card.maybe {
-  border-color: #e3ca8f;
-  background: #fffdf7;
-}
-
-.room-card.closed {
+.room-card.rising {
   border-color: #e0aaa5;
   background: #fffafa;
+}
+
+.room-card.steady {
+  border-color: #d8e3de;
+  background: white;
 }
 
 @layer base {
