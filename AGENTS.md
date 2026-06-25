@@ -65,6 +65,7 @@ Before editing files for a substantial task:
 - TanStack Query for dashboard refresh
 - TanStack DB represented by the local history collection in `src/window-watcher/db.ts`
 - TanStack Form/Table dependencies retained from the requested CLI add-ons; generated demo pages were removed because Window Watcher is the product surface
+- Clerk TanStack React Start SDK for Google sign-in and session handling
 - shadcn component setup via `components.json` and generated UI components
 - Tailwind CSS 4
 - Recharts for hoverable dashboard charts
@@ -93,8 +94,9 @@ Environment variables:
 - `OUTDOOR_TREND_HOURS`, default `3`
 - `OUTDOOR_TREND_DELTA_C`, default `0.3`
 - `PORT`, used by the production Start server
-- `APP_USERNAME`, default `window`
-- `APP_PASSWORD`, required on Railway. If Railway env markers are present and this is unset, the app returns `503` instead of exposing private temperature data.
+- `CLERK_PUBLISHABLE_KEY`, Clerk public browser key
+- `CLERK_SECRET_KEY`, Clerk server key. Never commit it.
+- `AUTHORIZED_EMAIL`, the only verified Google OAuth email allowed to read dashboard data
 - `DATA_DIR`, optional explicit persistence directory
 - `TADO_TOKEN_FILE`, optional explicit tado token file path
 - `RAILWAY_VOLUME_MOUNT_PATH`, used as the default durable base path on Railway when present
@@ -102,6 +104,8 @@ Environment variables:
 ## Architecture
 
 - Browser code imports `src/window-watcher/functions.ts`, which defines TanStack Start server functions.
+- Clerk is wired through `src/start.ts` with `clerkMiddleware()` and `src/routes/__root.tsx` with `ClerkProvider`.
+- The route can render a sign-in prompt publicly, but `getDashboardData` enforces authentication and a verified Google OAuth account matching `AUTHORIZED_EMAIL` before importing the private temperature server module.
 - Server functions dynamically import `src/window-watcher/server.ts`, which is marked `@tanstack/react-start/server-only`.
 - `server.ts` owns tado token refresh, Open-Meteo reads, recommendation logic, and JSONL history persistence.
 - The dashboard route uses TanStack Query with a 60 second refetch interval.
@@ -114,6 +118,8 @@ Environment variables:
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.
 - Railway cron exists, but its documented minimum frequency is five minutes. Keep the app as an always-on service for one-minute measurements.
+- Railway's "Login with Railway" is for authenticating Railway users/resources, not for locking this dashboard to one Google account. Clerk is the chosen app auth provider; configure Google sign-in in Clerk and set the Clerk variables on Railway.
+- The public GitHub repository must never include `.env`, `.tado-token.json`, `data/temperature-history.jsonl`, Clerk secrets, tado tokens, or Railway tokens.
 
 ## Validation
 

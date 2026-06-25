@@ -1,3 +1,4 @@
+import { SignInButton, UserButton, useUser } from "@clerk/tanstack-react-start";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -28,11 +29,25 @@ const outsideColor = "#1f789d";
 
 function App() {
 	const [rangeMode, setRangeMode] = useState<RangeMode>("4h");
+	const { isLoaded, isSignedIn } = useUser();
 	const dashboard = useQuery({
 		queryKey: ["window-watcher-dashboard"],
 		queryFn: () => getDashboardData(),
+		enabled: isLoaded && isSignedIn,
 		refetchInterval: 60_000,
 	});
+
+	if (!isLoaded) {
+		return (
+			<main className="mx-auto flex min-h-screen max-w-7xl items-center px-5">
+				<p className="text-lg font-semibold text-slate-700">
+					Loading sign-in state...
+				</p>
+			</main>
+		);
+	}
+
+	if (!isSignedIn) return <AuthGate />;
 
 	if (dashboard.isLoading) {
 		return (
@@ -68,6 +83,27 @@ function App() {
 	);
 }
 
+function AuthGate() {
+	return (
+		<main className="mx-auto flex min-h-screen max-w-2xl items-center px-5 text-slate-900">
+			<section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+				<h1 className="text-2xl font-extrabold text-slate-950">
+					Window Watcher
+				</h1>
+				<p className="mt-3 text-sm font-medium leading-6 text-slate-600">
+					Sign in with the authorized Google account to view the flat
+					temperatures and recommendations.
+				</p>
+				<div className="mt-5">
+					<SignInButton mode="modal">
+						<Button type="button">Sign in with Google</Button>
+					</SignInButton>
+				</div>
+			</section>
+		</main>
+	);
+}
+
 function Dashboard({
 	data,
 	rangeMode,
@@ -94,9 +130,12 @@ function Dashboard({
 			<section className={`main-card ${status.verdict.action}`}>
 				<div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
 					<div className="min-w-0">
-						<h1 className="text-2xl font-extrabold tracking-normal text-slate-950 sm:text-3xl">
-							Window Watcher
-						</h1>
+						<div className="flex flex-wrap items-center gap-3">
+							<h1 className="text-2xl font-extrabold tracking-normal text-slate-950 sm:text-3xl">
+								Window Watcher
+							</h1>
+							<UserButton />
+						</div>
 						<p className="mt-1 max-w-4xl text-sm font-medium leading-6 text-slate-600">
 							{status.location.label} · updated {formatTime(latestAt)}
 							{status.stale

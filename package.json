@@ -17,6 +17,7 @@
     "start": "NODE_ENV=production node scripts/start-railway.mjs"
   },
   "dependencies": {
+    "@clerk/tanstack-react-start": "^1.4.8",
     "@faker-js/faker": "^10.3.0",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/db": "^0.6.10",
