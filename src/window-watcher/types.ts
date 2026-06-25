@@ -86,6 +86,14 @@ export type CoolingStatus = {
 			hours: number;
 			sampleCount: number;
 		};
+		forecast?: {
+			horizonHours: number;
+			minTemperatureC?: number;
+			minAt?: string;
+			changeC?: number;
+			reachesThresholdAt?: string;
+			summary?: string;
+		};
 		strategy: string;
 		thresholdC: number;
 		marginToThresholdC: number;

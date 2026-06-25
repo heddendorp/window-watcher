@@ -238,6 +238,8 @@ async function fetchOutsideWeather() {
 		latitude: String(config.latitude),
 		longitude: String(config.longitude),
 		current: "temperature_2m,relative_humidity_2m,weather_code",
+		hourly: "temperature_2m",
+		forecast_hours: "5",
 		timezone: "Europe/Berlin",
 	});
 
@@ -245,6 +247,10 @@ async function fetchOutsideWeather() {
 		current?: {
 			temperature_2m?: number;
 			relative_humidity_2m?: number;
+		};
+		hourly?: {
+			time?: Array<string>;
+			temperature_2m?: Array<number>;
 		};
 	}>(`https://api.open-meteo.com/v1/forecast?${params.toString()}`);
 }
@@ -321,10 +327,114 @@ function analyzeOutdoorTrend(
 	};
 }
 
+function analyzeForecast(
+	outside: Awaited<ReturnType<typeof fetchOutsideWeather>>,
+	outsideC: number,
+	checkedAt: string,
+) {
+	const checkedTime = new Date(checkedAt).getTime();
+	const horizonHours = 4;
+	const horizonEnd = checkedTime + horizonHours * 60 * 60 * 1000;
+	const times = outside.hourly?.time || [];
+	const temperatures = outside.hourly?.temperature_2m || [];
+	const points = times
+		.map((time, index) => ({
+			time,
+			timestamp: new Date(time).getTime(),
+			temperatureC: temperatures[index],
+		}))
+		.filter(
+			(point) =>
+				Number.isFinite(point.timestamp) &&
+				Number.isFinite(point.temperatureC) &&
+				point.timestamp >= checkedTime &&
+				point.timestamp <= horizonEnd,
+		);
+
+	if (!points.length) return undefined;
+
+	const coolest = points.reduce((best, point) =>
+		point.temperatureC < best.temperatureC ? point : best,
+	);
+
+	return {
+		horizonHours,
+		minTemperatureC: Number(coolest.temperatureC),
+		minAt: coolest.time,
+		changeC: Number(coolest.temperatureC) - outsideC,
+		points,
+	};
+}
+
+function findThresholdTime(
+	forecast: ReturnType<typeof analyzeForecast>,
+	thresholdC: number,
+) {
+	return forecast?.points.find((point) => point.temperatureC <= thresholdC)
+		?.time;
+}
+
+function buildForecastSummary(
+	forecast: ReturnType<typeof analyzeForecast>,
+	reachesThresholdAt: string | undefined,
+	thresholdC: number,
+) {
+	if (!forecast?.minTemperatureC) return undefined;
+	if (reachesThresholdAt) {
+		return `Forecast reaches the cooling threshold around ${formatForecastTime(reachesThresholdAt)}.`;
+	}
+	return `Forecast low is ${forecast.minTemperatureC.toFixed(1)} C, still above the ${thresholdC.toFixed(1)} C threshold.`;
+}
+
+function buildRoomTrendVerdict(
+	room: TadoRoom,
+	outsideC: number,
+	trend: ReturnType<typeof analyzeOutdoorTrend>,
+) {
+	if (trend.direction === "falling") {
+		const limitC = room.temperatureC + 1;
+		const difference = limitC - outsideC;
+		return {
+			action: outsideC <= limitC ? ("open" as const) : ("closed" as const),
+			title: outsideC <= limitC ? "Open this window" : "Keep closed",
+			detail:
+				outsideC <= limitC
+					? `Outdoor temperature is falling and close enough for ${room.zoneName}.`
+					: `Outside is ${Math.abs(difference).toFixed(1)} C above the falling-air threshold.`,
+		};
+	}
+
+	const openLimitC = room.temperatureC - config.coolingMarginC;
+	const difference = room.temperatureC - outsideC;
+
+	if (outsideC < openLimitC) {
+		return {
+			action: "open" as const,
+			title: "Open this window",
+			detail: `Outside is ${difference.toFixed(1)} C cooler than ${room.zoneName}.`,
+		};
+	}
+
+	if (outsideC < room.temperatureC) {
+		return {
+			action: "maybe" as const,
+			title: "Only open briefly",
+			detail: `Outside is cooler than ${room.zoneName}, but not by ${config.coolingMarginC.toFixed(1)} C.`,
+		};
+	}
+
+	return {
+		action: "closed" as const,
+		title: "Keep closed",
+		detail: `Outside is ${Math.abs(difference).toFixed(1)} C warmer than ${room.zoneName}.`,
+	};
+}
+
 function buildTrendVerdict(
 	rooms: Array<TadoRoom>,
 	outsideC: number,
 	trend: ReturnType<typeof analyzeOutdoorTrend>,
+	forecast?: ReturnType<typeof analyzeForecast>,
 ) {
 	const coldestRoom = rooms.reduce((coldest, room) =>
 		room.temperatureC < coldest.temperatureC ? room : coldest,
@@ -336,23 +446,55 @@ function buildTrendVerdict(
 	if (trend.direction === "falling") {
 		const limitC = warmestRoom.temperatureC + 1;
 		const marginToThresholdC = limitC - outsideC;
+		const reachesThresholdAt = findThresholdTime(forecast, limitC);
+		const forecastSummary = buildForecastSummary(
+			forecast,
+			reachesThresholdAt,
+			limitC,
+		);
+		const shouldOpen = outsideC <= limitC;
 
 		return {
 			referenceRoom: warmestRoom,
-			action: outsideC <= limitC ? ("open" as const) : ("closed" as const),
-			title: outsideC <= limitC ? "Open the windows" : "Keep windows closed",
-			detail:
-				outsideC <= limitC
-					? `Outdoor temperature is falling; outside is at or below ${warmestRoom.zoneName} plus 1.0 C.`
+			action: shouldOpen
+				? ("open" as const)
+				: reachesThresholdAt
+					? ("maybe" as const)
+					: ("closed" as const),
+			title: shouldOpen
+				? "Open the windows"
+				: reachesThresholdAt
+					? "Open soon"
+					: "Keep windows closed",
+			detail: shouldOpen
+				? `Outdoor temperature is falling; outside is at or below ${warmestRoom.zoneName} plus 1.0 C.`
+				: reachesThresholdAt
+					? `Outdoor temperature is falling and should become useful around ${formatForecastTime(reachesThresholdAt)}.`
 					: `Outdoor temperature is falling, but outside is still ${(outsideC - limitC).toFixed(1)} C above ${warmestRoom.zoneName} plus 1.0 C.`,
 			strategy: "falling-outdoor-warmest-plus-one",
 			thresholdC: limitC,
 			marginToThresholdC,
+			forecast: forecast
+				? {
+						horizonHours: forecast.horizonHours,
+						minTemperatureC: forecast.minTemperatureC,
+						minAt: forecast.minAt,
+						changeC: forecast.changeC,
+						reachesThresholdAt,
+						summary: forecastSummary,
+					}
+				: undefined,
 		};
 	}
 
 	const limitC = coldestRoom.temperatureC - config.coolingMarginC;
 	const marginToThresholdC = limitC - outsideC;
+	const reachesThresholdAt = findThresholdTime(forecast, limitC);
+	const forecastSummary = buildForecastSummary(
+		forecast,
+		reachesThresholdAt,
+		limitC,
+	);
 
 	if (outsideC < limitC) {
 		return {
@@ -363,6 +505,38 @@ function buildTrendVerdict(
 			strategy: "rising-or-steady-outdoor-coldest-minus-two",
 			thresholdC: limitC,
 			marginToThresholdC,
+			forecast: forecast
+				? {
+						horizonHours: forecast.horizonHours,
+						minTemperatureC: forecast.minTemperatureC,
+						minAt: forecast.minAt,
+						changeC: forecast.changeC,
+						reachesThresholdAt,
+						summary: forecastSummary,
+					}
+				: undefined,
+		};
+	}
+
+	if (reachesThresholdAt) {
+		return {
+			referenceRoom: coldestRoom,
+			action: "maybe" as const,
+			title: "Wait for cooler air",
+			detail: `Forecast reaches useful cooling around ${formatForecastTime(reachesThresholdAt)}.`,
+			strategy: "forecast-cooling-window",
+			thresholdC: limitC,
+			marginToThresholdC,
+			forecast: forecast
+				? {
+						horizonHours: forecast.horizonHours,
+						minTemperatureC: forecast.minTemperatureC,
+						minAt: forecast.minAt,
+						changeC: forecast.changeC,
+						reachesThresholdAt,
+						summary: forecastSummary,
+					}
+				: undefined,
 		};
 	}
 
@@ -375,6 +549,16 @@ function buildTrendVerdict(
 			strategy: "rising-or-steady-outdoor-coldest-minus-two",
 			thresholdC: limitC,
 			marginToThresholdC,
+			forecast: forecast
+				? {
+						horizonHours: forecast.horizonHours,
+						minTemperatureC: forecast.minTemperatureC,
+						minAt: forecast.minAt,
+						changeC: forecast.changeC,
+						reachesThresholdAt,
+						summary: forecastSummary,
+					}
+				: undefined,
 		};
 	}
 
@@ -386,7 +570,25 @@ function buildTrendVerdict(
 		strategy: "rising-or-steady-outdoor-coldest-minus-two",
 		thresholdC: limitC,
 		marginToThresholdC,
+		forecast: forecast
+			? {
+					horizonHours: forecast.horizonHours,
+					minTemperatureC: forecast.minTemperatureC,
+					minAt: forecast.minAt,
+					changeC: forecast.changeC,
+					reachesThresholdAt,
+					summary: forecastSummary,
+				}
+			: undefined,
 	};
+}
+
+function formatForecastTime(value: string) {
+	return new Intl.DateTimeFormat("en-GB", {
+		hour: "2-digit",
+		minute: "2-digit",
+		timeZone: "Europe/Berlin",
+	}).format(new Date(value));
 }
 
 async function appendHistory(status: CoolingStatus) {
@@ -504,12 +706,18 @@ async function collectFreshCoolingStatus() {
 	);
 	const checkedAt = new Date().toISOString();
 	const trend = analyzeOutdoorTrend(previousHistory, outsideC, checkedAt);
-	const recommendation = buildTrendVerdict(target.rooms, outsideC, trend);
+	const forecast = analyzeForecast(outside, outsideC, checkedAt);
+	const recommendation = buildTrendVerdict(
+		target.rooms,
+		outsideC,
+		trend,
+		forecast,
+	);
 	const referenceRoom = recommendation.referenceRoom;
 	const rooms = target.rooms.map((room) => ({
 		...room,
 		differenceC: room.temperatureC - outsideC,
-		verdict: buildVerdict(room.temperatureC, outsideC, room.zoneName),
+		verdict: buildRoomTrendVerdict(room, outsideC, trend),
 	}));
 
 	const status: CoolingStatus = {
@@ -537,6 +745,7 @@ async function collectFreshCoolingStatus() {
 		},
 		recommendation: {
 			outdoorTrend: trend,
+			forecast: recommendation.forecast,
 			strategy: recommendation.strategy,
 			thresholdC: recommendation.thresholdC,
 			marginToThresholdC: recommendation.marginToThresholdC,

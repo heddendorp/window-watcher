@@ -4,11 +4,24 @@ import type { DashboardData } from "./types";
 
 export const getDashboardData = createServerFn({ method: "GET" }).handler(
 	async (): Promise<DashboardData> => {
-		await requireAuthorizedUser();
+		if (shouldRequireAuth()) await requireAuthorizedUser();
 		const { getDashboardPayload } = await import("./server");
 		return getDashboardPayload();
 	},
 );
+
+function shouldRequireAuth() {
+	if (isRailwayRuntime()) return true;
+	return process.env.WINDOW_WATCHER_AUTH === "true";
+}
+
+function isRailwayRuntime() {
+	return Boolean(
+		process.env.RAILWAY_ENVIRONMENT_ID ||
+			process.env.RAILWAY_PROJECT_ID ||
+			process.env.RAILWAY_SERVICE_ID,
+	);
+}
 
 async function requireAuthorizedUser() {
 	const allowedEmail = process.env.AUTHORIZED_EMAIL?.trim().toLowerCase();

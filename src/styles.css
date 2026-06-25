@@ -157,14 +157,17 @@ button {
 
 .main-card.open {
   border-left-color: #10875f;
+  background: linear-gradient(135deg, #f4fbf7 0%, #ffffff 52%);
 }
 
 .main-card.maybe {
   border-left-color: #c88a00;
+  background: linear-gradient(135deg, #fffbef 0%, #ffffff 52%);
 }
 
 .main-card.closed {
   border-left-color: #b03a2e;
+  background: linear-gradient(135deg, #fff6f4 0%, #ffffff 52%);
 }
 
 .room-card {
@@ -185,14 +188,17 @@ button {
 
 .room-card.open {
   border-color: #9bd2bd;
+  background: #fbfffd;
 }
 
 .room-card.maybe {
   border-color: #e3ca8f;
+  background: #fffdf7;
 }
 
 .room-card.closed {
   border-color: #e0aaa5;
+  background: #fffafa;
 }
 
 @layer base {

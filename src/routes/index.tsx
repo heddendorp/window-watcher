@@ -26,16 +26,15 @@ type RangeMode = "4h" | "16h" | "24h" | "48h" | "week";
 
 const roomColors = ["#0f8b5f", "#b03a2e", "#a56b00", "#6750a4", "#b35c14"];
 const outsideColor = "#1f789d";
+const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 
 function App() {
-	const [rangeMode, setRangeMode] = useState<RangeMode>("4h");
+	if (authEnabled) return <AuthenticatedApp />;
+	return <DashboardQuery authEnabled={false} />;
+}
+
+function AuthenticatedApp() {
 	const { isLoaded, isSignedIn } = useUser();
-	const dashboard = useQuery({
-		queryKey: ["window-watcher-dashboard"],
-		queryFn: () => getDashboardData(),
-		enabled: isLoaded && isSignedIn,
-		refetchInterval: 60_000,
-	});
 
 	if (!isLoaded) {
 		return (
@@ -48,6 +47,16 @@ function App() {
 	}
 
 	if (!isSignedIn) return <AuthGate />;
+	return <DashboardQuery authEnabled={true} />;
+}
+
+function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
+	const [rangeMode, setRangeMode] = useState<RangeMode>("4h");
+	const dashboard = useQuery({
+		queryKey: ["window-watcher-dashboard"],
+		queryFn: () => getDashboardData(),
+		refetchInterval: 60_000,
+	});
 
 	if (dashboard.isLoading) {
 		return (
@@ -57,6 +66,14 @@ function App() {
 				</p>
 			</main>
 		);
+	}
+
+	if (
+		authEnabled &&
+		dashboard.error instanceof Error &&
+		dashboard.error.message.includes("Sign in with Google")
+	) {
+		return <AuthGate />;
 	}
 
 	if (dashboard.isError || !dashboard.data) {
@@ -76,6 +93,7 @@ function App() {
 
 	return (
 		<Dashboard
+			authEnabled={authEnabled}
 			data={dashboard.data}
 			rangeMode={rangeMode}
 			setRangeMode={setRangeMode}
@@ -105,17 +123,18 @@ function AuthGate() {
 }
 
 function Dashboard({
+	authEnabled,
 	data,
 	rangeMode,
 	setRangeMode,
 }: {
+	authEnabled: boolean;
 	data: DashboardData;
 	rangeMode: RangeMode;
 	setRangeMode: (mode: RangeMode) => void;
 }) {
 	const { status, history } = data;
 	const latestAt = new Date(status.checkedAt);
-	const nextRefreshSeconds = 60 - (new Date().getSeconds() % 60);
 	const historyCollection = useMemo(
 		() => createHistoryCollection(history),
 		[history],
@@ -124,6 +143,17 @@ function Dashboard({
 		() => buildChartRows(filterHistory(history, rangeMode), status.rooms),
 		[history, rangeMode, status.rooms],
 	);
+	const chartScale = useMemo(
+		() => buildTemperatureScale(chartRows, status.rooms),
+		[chartRows, status.rooms],
+	);
+	const legendItems = [
+		{ label: "Outside", color: outsideColor },
+		...status.rooms.map((room, index) => ({
+			label: room.zoneName,
+			color: roomColors[index % roomColors.length],
+		})),
+	];
 
 	return (
 		<main className="mx-auto min-h-screen max-w-7xl px-3 py-3 text-slate-900 sm:px-5 sm:py-5">
@@ -134,15 +164,13 @@ function Dashboard({
 							<h1 className="text-2xl font-extrabold tracking-normal text-slate-950 sm:text-3xl">
 								Window Watcher
 							</h1>
-							<UserButton />
+							{authEnabled ? <UserButton /> : null}
 						</div>
 						<p className="mt-1 max-w-4xl text-sm font-medium leading-6 text-slate-600">
 							{status.location.label} · updated {formatTime(latestAt)}
 							{status.stale
 								? ` · stale since ${formatTime(new Date(status.lastFreshAt || status.checkedAt))}`
 								: ""}
-							{" · "}next refresh in {nextRefreshSeconds}s · TanStack DB{" "}
-							{historyCollection.id}
 						</p>
 					</div>
 					<div className="text-left sm:text-right">
@@ -170,6 +198,11 @@ function Dashboard({
 								Fresh readings failed: {status.staleReason}
 							</p>
 						) : null}
+						{status.recommendation.forecast?.summary ? (
+							<p className="mt-2 text-sm font-semibold text-slate-700">
+								{status.recommendation.forecast.summary}
+							</p>
+						) : null}
 					</div>
 					<div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
 						<p className="text-xs font-bold uppercase text-slate-500">
@@ -182,6 +215,9 @@ function Dashboard({
 						</p>
 						<p className="mt-1 text-xs text-slate-600">
 							Threshold {formatTemp(status.recommendation.thresholdC)}
+							{status.recommendation.forecast?.minTemperatureC == null
+								? ""
+								: ` · next ${status.recommendation.forecast.horizonHours.toFixed(0)}h low ${formatTemp(status.recommendation.forecast.minTemperatureC)}`}
 						</p>
 					</div>
 				</div>
@@ -191,7 +227,7 @@ function Dashboard({
 				<div className="mb-4 flex flex-wrap items-center justify-between gap-3">
 					<div>
 						<h2 className="text-xl font-extrabold text-slate-950 sm:text-2xl">
-							Development
+							Temperature Trends
 						</h2>
 						<p className="mt-1 text-sm font-medium text-slate-600">
 							{rangeMode} · {chartRows.length} saved measurements
@@ -211,6 +247,20 @@ function Dashboard({
 						))}
 					</div>
 				</div>
+				<div className="mb-3 flex flex-wrap gap-x-4 gap-y-2">
+					{legendItems.map((item) => (
+						<div
+							className="flex items-center gap-2 text-xs font-extrabold uppercase text-slate-600"
+							key={item.label}
+						>
+							<span
+								className="size-2.5 rounded-full"
+								style={{ backgroundColor: item.color }}
+							/>
+							{item.label}
+						</div>
+					))}
+				</div>
 				<div className="h-[18rem] w-full sm:h-[22rem]">
 					<ResponsiveContainer height="100%" width="100%">
 						<LineChart
@@ -225,13 +275,11 @@ function Dashboard({
 								tickLine={false}
 							/>
 							<YAxis
-								domain={([min, max]) => [
-									Math.floor(Number(min) * 10 - 3) / 10,
-									Math.ceil(Number(max) * 10 + 3) / 10,
-								]}
+								domain={[chartScale.min, chartScale.max]}
 								stroke="#64746d"
 								tickFormatter={(value) => `${value} C`}
 								tickLine={false}
+								ticks={chartScale.ticks}
 								width={54}
 							/>
 							<Tooltip
@@ -283,6 +331,9 @@ function Dashboard({
 					))}
 				</div>
 			</section>
+			<footer className="px-1 py-4 text-xs font-medium text-slate-500">
+				Auto-refreshes every minute · TanStack DB {historyCollection.id}
+			</footer>
 		</main>
 	);
 }
@@ -415,6 +466,27 @@ function buildChartRows(
 
 		return row;
 	});
+}
+
+function buildTemperatureScale(
+	rows: Array<Record<string, number | string | null>>,
+	rooms: Array<RoomReading>,
+) {
+	const keys = ["outside", ...rooms.map((room) => `room-${room.zoneId}`)];
+	const values = rows.flatMap((row) =>
+		keys
+			.map((key) => row[key])
+			.filter((value): value is number => typeof value === "number"),
+	);
+
+	if (!values.length)
+		return { min: 16, max: 30, ticks: [16, 18, 20, 22, 24, 26, 28, 30] };
+
+	const min = Math.floor((Math.min(...values) - 1) / 2) * 2;
+	const max = Math.ceil((Math.max(...values) + 1) / 2) * 2;
+	const ticks = [];
+	for (let tick = min; tick <= max; tick += 2) ticks.push(tick);
+	return { min, max, ticks };
 }
 
 function getRoomSparkline(

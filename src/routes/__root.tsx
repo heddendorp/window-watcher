@@ -10,6 +10,8 @@ import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import TanStackQueryDevtools from "../integrations/tanstack-query/devtools";
 import appCss from "../styles.css?url";
 
+const clerkEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
+
 interface MyRouterContext {
 	queryClient: QueryClient;
 }
@@ -33,21 +35,31 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				<HeadContent />
 			</head>
 			<body className="font-sans antialiased [overflow-wrap:anywhere] selection:bg-emerald-200/40">
-				<ClerkProvider>
-					{children}
-					<TanStackDevtools
-						config={{ position: "bottom-right" }}
-						plugins={[
-							{
-								name: "Tanstack Router",
-								render: <TanStackRouterDevtoolsPanel />,
-							},
-							TanStackQueryDevtools,
-						]}
-					/>
-				</ClerkProvider>
+				{clerkEnabled ? (
+					<ClerkProvider>{renderAppShell(children)}</ClerkProvider>
+				) : (
+					renderAppShell(children)
+				)}
 				<Scripts />
 			</body>
 		</html>
+	);
+}
+
+function renderAppShell(children: React.ReactNode) {
+	return (
+		<>
+			{children}
+			<TanStackDevtools
+				config={{ position: "bottom-right" }}
+				plugins={[
+					{
+						name: "Tanstack Router",
+						render: <TanStackRouterDevtoolsPanel />,
+					},
+					TanStackQueryDevtools,
+				]}
+			/>
+		</>
 	);
 }

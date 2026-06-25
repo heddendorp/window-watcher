@@ -94,9 +94,11 @@ Environment variables:
 - `OUTDOOR_TREND_HOURS`, default `3`
 - `OUTDOOR_TREND_DELTA_C`, default `0.3`
 - `PORT`, used by the production Start server
-- `CLERK_PUBLISHABLE_KEY`, Clerk public browser key
+- `VITE_CLERK_PUBLISHABLE_KEY`, Clerk public browser key. Required on Railway for the browser sign-in UI.
 - `CLERK_SECRET_KEY`, Clerk server key. Never commit it.
 - `AUTHORIZED_EMAIL`, the only verified Google OAuth email allowed to read dashboard data
+- `VITE_WINDOW_WATCHER_AUTH`, public browser flag. Set to `true` on Railway and only during local auth testing.
+- `WINDOW_WATCHER_AUTH`, optional. Set to `true` only to force Clerk auth locally; Railway enables auth automatically via Railway environment markers.
 - `DATA_DIR`, optional explicit persistence directory
 - `TADO_TOKEN_FILE`, optional explicit tado token file path
 - `RAILWAY_VOLUME_MOUNT_PATH`, used as the default durable base path on Railway when present
@@ -104,10 +106,10 @@ Environment variables:
 ## Architecture
 
 - Browser code imports `src/window-watcher/functions.ts`, which defines TanStack Start server functions.
-- Clerk is wired through `src/start.ts` with `clerkMiddleware()` and `src/routes/__root.tsx` with `ClerkProvider`.
+- Clerk is wired through `src/start.ts` with conditional `clerkMiddleware()` and `src/routes/__root.tsx` with conditional `ClerkProvider`. Local auth is off by default; Railway auth is on by default.
 - The route can render a sign-in prompt publicly, but `getDashboardData` enforces authentication and a verified Google OAuth account matching `AUTHORIZED_EMAIL` before importing the private temperature server module.
 - Server functions dynamically import `src/window-watcher/server.ts`, which is marked `@tanstack/react-start/server-only`.
-- `server.ts` owns tado token refresh, Open-Meteo reads, recommendation logic, and JSONL history persistence.
+- `server.ts` owns tado token refresh, Open-Meteo current/forecast reads, recommendation logic, and JSONL history persistence.
 - The dashboard route uses TanStack Query with a 60 second refetch interval.
 - Recharts powers the main chart; room sparklines are lightweight SVG segments so rising, falling, and neutral room changes can be colored per segment.
 
