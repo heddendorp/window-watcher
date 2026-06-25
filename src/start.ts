@@ -1,5 +1,9 @@
 import { clerkMiddleware } from "@clerk/tanstack-react-start/server";
-import { createStart } from "@tanstack/react-start";
+import { createCsrfMiddleware, createStart } from "@tanstack/react-start";
+
+const csrfMiddleware = createCsrfMiddleware({
+	filter: (ctx) => ctx.handlerType === "serverFn",
+});
 
 function shouldRegisterClerkMiddleware() {
 	if (
@@ -14,5 +18,8 @@ function shouldRegisterClerkMiddleware() {
 }
 
 export const startInstance = createStart(() => ({
-	requestMiddleware: shouldRegisterClerkMiddleware() ? [clerkMiddleware()] : [],
+	requestMiddleware: [
+		csrfMiddleware,
+		...(shouldRegisterClerkMiddleware() ? [clerkMiddleware()] : []),
+	],
 }));

@@ -111,12 +111,12 @@ Environment variables:
 - Server functions dynamically import `src/window-watcher/server.ts`, which is marked `@tanstack/react-start/server-only`.
 - `server.ts` owns tado token refresh, Open-Meteo current/forecast reads, recommendation logic, and JSONL history persistence.
 - The dashboard route uses TanStack Query with a 60 second refetch interval.
-- Recharts powers the main chart; room sparklines are lightweight SVG segments so rising, falling, and neutral room changes can be colored per segment.
+- Recharts powers the main chart and room sparklines. The sparklines use one smoothed line with a time-based SVG gradient for rising, falling, and neutral room changes.
 
 ## Known Gotchas
 
 - The production launcher `scripts/start-railway.mjs` imports the built server-only chunk and starts the background sampler before starting Nitro. This keeps one-minute sampling active while the Railway web service is running.
-- `pnpm dev` uses `scripts/dev-local.mjs` because the generated Vite/Nitro dev worker currently fails with `Vite environment "ssr" is unavailable`. The local dev runner rebuilds on file changes, restarts the built app on an internal port, proxies `localhost:3000`, and injects a browser reload event stream.
+- `pnpm dev` uses the standard TanStack Start Vite dev server. The explicit `nitro/vite` plugin is loaded only for `vite build`; loading it during `vite dev` caused Nitro's dev worker to fail with `Vite environment "ssr" is unavailable` on this dependency set.
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.
 - Railway cron exists, but its documented minimum frequency is five minutes. Keep the app as an always-on service for one-minute measurements.

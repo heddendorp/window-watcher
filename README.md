@@ -9,9 +9,7 @@ pnpm install
 pnpm dev
 ```
 
-The app runs on [http://localhost:3000](http://localhost:3000). The local dev runner rebuilds and reloads the browser when source files change.
-
-Note: the generated TanStack Start Vite dev server currently starts but returns Nitro's `Vite environment "ssr" is unavailable` for page requests in this workspace. It is still available as `pnpm run dev:vite` for debugging that upstream stack, while `pnpm dev` uses the working auto-reload runner.
+The app runs on [http://localhost:3000](http://localhost:3000) using the standard TanStack Start Vite dev server with Vite reload/HMR.
 
 ## Environment
 
