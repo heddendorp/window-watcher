@@ -91,6 +91,8 @@ Environment variables:
 - `COOLING_MARGIN_C`, default `2`
 - `REQUEST_TIMEOUT_MS`, default `5000`
 - `SAMPLE_INTERVAL_MS`, optional; defaults to `60000` locally and `300000` on Railway
+- `BACKGROUND_SAMPLER`, optional. Set to `false` for Railway Serverless/App Sleeping so the web service does not keep itself awake with periodic outbound tado/weather calls.
+- `SAMPLE_TRIGGER_TOKEN`, secret bearer token required by `POST /api/sample` for Railway cron-triggered sampling.
 - `OUTDOOR_TREND_HOURS`, default `3`
 - `OUTDOOR_TREND_DELTA_C`, default `0.3`
 - `PORT`, used by the production Start server
@@ -111,6 +113,8 @@ Environment variables:
 - The route can render a sign-in prompt publicly, but `getDashboardData` enforces authentication and a verified Google OAuth account matching `AUTHORIZED_EMAIL` before importing the private temperature server module.
 - Server functions dynamically import `src/window-watcher/server.ts`, which is marked `@tanstack/react-start/server-only`.
 - `server.ts` owns tado token refresh, Open-Meteo current/forecast reads, recommendation logic, and JSONL history persistence.
+- The production web service can run in Railway Serverless/App Sleeping mode with `BACKGROUND_SAMPLER=false`. In that mode, fresh samples are taken on dashboard requests instead of an always-on interval.
+- `POST /api/sample` records one fresh sample for Railway cron. It requires `Authorization: Bearer $SAMPLE_TRIGGER_TOKEN` and must not be exposed without that secret.
 - The dashboard route uses TanStack Query with a 60 second refetch interval.
 - Recharts powers the main chart and room sparklines. The sparklines use one smoothed line with a time-based SVG gradient for rising, falling, and neutral room changes.
 

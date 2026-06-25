@@ -40,6 +40,7 @@ const config = {
 	),
 	outdoorTrendHours: Number(process.env.OUTDOOR_TREND_HOURS || 3),
 	outdoorTrendDeltaC: Number(process.env.OUTDOOR_TREND_DELTA_C || 0.3),
+	backgroundSampler: process.env.BACKGROUND_SAMPLER !== "false",
 };
 
 let refreshInFlight: Promise<TadoToken> | null = null;
@@ -795,6 +796,14 @@ async function sampleCoolingStatus(reason = "interval") {
 	return sampleInFlight;
 }
 
+export async function recordCoolingStatusSample(reason = "manual") {
+	const sampled = await sampleCoolingStatus(reason);
+	if (!sampled) {
+		throw new Error("Could not record a fresh temperature sample.");
+	}
+	return sampled;
+}
+
 async function getCoolingStatus() {
 	if (statusCache && Date.now() - statusCache.createdAt < CACHE_MS) {
 		return { ...statusCache.data, cached: true };
@@ -815,6 +824,7 @@ async function getCoolingStatus() {
 }
 
 export function startBackgroundSampler() {
+	if (!config.backgroundSampler) return;
 	if (samplerStarted) return;
 	samplerStarted = true;
 
