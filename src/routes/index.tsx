@@ -351,6 +351,7 @@ function RoomCard({
 	history: Array<TemperatureHistoryEntry>;
 }) {
 	const sparklinePoints = getRoomSparkline(history, room.zoneId);
+	const hourlyTrend = getRoomHourlyTrend(history, room.zoneId);
 
 	return (
 		<article className={`room-card ${room.verdict.action}`}>
@@ -368,10 +369,37 @@ function RoomCard({
 							? ""
 							: ` · ${room.humidityPercent.toFixed(0)}% humidity`}
 					</p>
+					<HourlyTrendBadge trend={hourlyTrend} />
 				</div>
 			</div>
 			<Sparkline points={sparklinePoints} />
 		</article>
+	);
+}
+
+function HourlyTrendBadge({ trend }: { trend: RoomHourlyTrend | null }) {
+	if (!trend) {
+		return (
+			<span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-extrabold text-slate-500">
+				1h -
+			</span>
+		);
+	}
+
+	const trendClass =
+		trend.direction === "rising"
+			? "bg-red-50 text-red-700"
+			: trend.direction === "falling"
+				? "bg-emerald-50 text-emerald-700"
+				: "bg-slate-100 text-slate-600";
+
+	return (
+		<span
+			className={`rounded-full px-2 py-1 text-xs font-extrabold ${trendClass}`}
+			title={`${formatDelta(trend.changeC)} over ${trend.hours.toFixed(1)}h`}
+		>
+			1h {formatDelta(trend.changeC)}
+		</span>
 	);
 }
 
@@ -500,6 +528,12 @@ function getSparklineTrendColor(delta: number) {
 	return delta > 0 ? sparklineRiseColor : sparklineFallColor;
 }
 
+type RoomHourlyTrend = {
+	changeC: number;
+	hours: number;
+	direction: "rising" | "falling" | "steady";
+};
+
 function filterHistory(
 	history: Array<TemperatureHistoryEntry>,
 	mode: RangeMode,
@@ -568,6 +602,43 @@ function getRoomSparkline(
 	zoneId: number | string,
 ) {
 	const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+	return getRoomTemperaturePoints(history, zoneId).filter(
+		(point) => point.time >= cutoff,
+	);
+}
+
+function getRoomHourlyTrend(
+	history: Array<TemperatureHistoryEntry>,
+	zoneId: number | string,
+): RoomHourlyTrend | null {
+	const points = getRoomTemperaturePoints(history, zoneId);
+	if (points.length < 2) return null;
+
+	const latest = points.at(-1);
+	if (!latest) return null;
+
+	const oneHourAgo = latest.time - 60 * 60 * 1000;
+	const baseline =
+		points.findLast((point) => point.time <= oneHourAgo) ??
+		points.find((point) => point.time >= oneHourAgo);
+
+	if (!baseline || baseline.time === latest.time) return null;
+
+	const changeC = latest.value - baseline.value;
+	const hours = (latest.time - baseline.time) / (60 * 60 * 1000);
+
+	return {
+		changeC,
+		hours,
+		direction:
+			Math.abs(changeC) < 0.05 ? "steady" : changeC > 0 ? "rising" : "falling",
+	};
+}
+
+function getRoomTemperaturePoints(
+	history: Array<TemperatureHistoryEntry>,
+	zoneId: number | string,
+) {
 	return history
 		.map((entry) => {
 			const room = entry.rooms.find(
@@ -580,10 +651,9 @@ function getRoomSparkline(
 		})
 		.filter(
 			(point): point is { time: number; value: number } =>
-				Number.isFinite(point.time) &&
-				Number.isFinite(point.value) &&
-				point.time >= cutoff,
-		);
+				Number.isFinite(point.time) && Number.isFinite(point.value),
+		)
+		.sort((left, right) => left.time - right.time);
 }
 
 function formatTemp(value: number | undefined) {
