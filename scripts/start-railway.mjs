@@ -15,7 +15,19 @@ async function startSampler() {
 
 	const moduleUrl = pathToFileURL(path.join(ssrDir, serverChunk)).href;
 	const serverModule = await import(moduleUrl);
-	serverModule.startBackgroundSampler?.();
+	if (typeof serverModule.startBackgroundSampler === "function") {
+		serverModule.startBackgroundSampler();
+		return;
+	}
+
+	if (typeof serverModule.getDashboardPayload === "function") {
+		void serverModule.getDashboardPayload().catch((error) => {
+			console.error(`[window-watcher:startup] ${error.message}`);
+		});
+		return;
+	}
+
+	throw new Error("Could not find Window Watcher sampler entrypoint.");
 }
 
 await startSampler();
