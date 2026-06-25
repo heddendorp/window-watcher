@@ -26,7 +26,10 @@ type RangeMode = "4h" | "16h" | "24h" | "48h" | "week";
 
 const roomColors = ["#0f8b5f", "#b03a2e", "#a56b00", "#6750a4", "#b35c14"];
 const outsideColor = "#1f789d";
-const mainChartCurveType = "natural";
+const mainChartCurveType = "basis";
+const sparklineRiseColor = "#d23f36";
+const sparklineFallColor = "#0b8a61";
+const sparklineFlatColor = "#6f7c75";
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 
 function App() {
@@ -378,53 +381,101 @@ function Sparkline({
 }) {
 	if (points.length < 2) return <div className="h-16" />;
 
-	const width = 320;
-	const height = 64;
 	const min = Math.min(...points.map((point) => point.value));
 	const max = Math.max(...points.map((point) => point.value));
-	const span = Math.max(0.3, max - min);
-	const firstTime = points[0].time;
-	const lastTime = points.at(-1)?.time || firstTime;
-	const timeSpan = Math.max(1, lastTime - firstTime);
-	const xy = (point: { time: number; value: number }) => ({
-		x: ((point.time - firstTime) / timeSpan) * width,
-		y: height - ((point.value - min) / span) * (height - 12) - 6,
-	});
+	const padding = Math.max(0.15, (max - min) * 0.2);
+	const domain = [min - padding, max + padding];
+	const segments = buildSparklineSegments(points);
 
 	return (
-		<svg
-			aria-hidden="true"
-			className="mt-2 block h-16 w-full overflow-visible"
-			preserveAspectRatio="none"
-			viewBox={`0 0 ${width} ${height}`}
-		>
-			{points.slice(1).map((point, index) => {
-				const previous = points[index];
-				const a = xy(previous);
-				const b = xy(point);
-				const delta = point.value - previous.value;
-				const stroke =
-					Math.abs(delta) < 0.03
-						? "#6b756f"
-						: delta > 0
-							? "#d6453d"
-							: "#10875f";
-
-				return (
-					<line
-						key={`${previous.time}-${point.time}`}
-						stroke={stroke}
-						strokeLinecap="round"
-						strokeWidth="3.2"
-						x1={a.x}
-						x2={b.x}
-						y1={a.y}
-						y2={b.y}
+		<div className="mt-2 h-16 w-full">
+			<ResponsiveContainer height="100%" width="100%">
+				<LineChart
+					data={points}
+					margin={{ top: 4, right: 0, bottom: 0, left: 0 }}
+				>
+					<XAxis
+						dataKey="time"
+						domain={["dataMin", "dataMax"]}
+						hide
+						type="number"
 					/>
-				);
-			})}
-		</svg>
+					<YAxis domain={domain} hide />
+					<Tooltip
+						content={<SparklineTooltip />}
+						cursor={{ stroke: "#9aaba3", strokeWidth: 1 }}
+						isAnimationActive={false}
+					/>
+					<Line
+						activeDot={{
+							fill: "#ffffff",
+							r: 3,
+							stroke: "#17221f",
+							strokeWidth: 2,
+						}}
+						dataKey="value"
+						dot={false}
+						isAnimationActive={false}
+						stroke="transparent"
+						strokeWidth={8}
+						type="monotone"
+					/>
+					{segments.map((segment) => (
+						<Line
+							activeDot={false}
+							data={segment.points}
+							dataKey="value"
+							dot={false}
+							isAnimationActive={false}
+							key={segment.id}
+							stroke={segment.color}
+							strokeLinecap="round"
+							strokeWidth={3}
+							type="linear"
+						/>
+					))}
+				</LineChart>
+			</ResponsiveContainer>
+		</div>
 	);
+}
+
+function SparklineTooltip({
+	active,
+	payload,
+}: {
+	active?: boolean;
+	payload?: Array<{ payload?: { time: number; value: number } }>;
+}) {
+	const point = payload?.[0]?.payload;
+	if (!active || !point) return null;
+
+	return (
+		<div className="rounded-md border border-slate-200 bg-white/95 px-2 py-1 text-xs font-bold text-slate-700 shadow-sm">
+			{formatTemp(point.value)} · {formatTime(new Date(point.time))}
+		</div>
+	);
+}
+
+function buildSparklineSegments(
+	points: Array<{ time: number; value: number }>,
+) {
+	return points.slice(1).map((point, index) => {
+		const previous = points[index];
+		const delta = point.value - previous.value;
+		const color =
+			Math.abs(delta) < 0.03
+				? sparklineFlatColor
+				: delta > 0
+					? sparklineRiseColor
+					: sparklineFallColor;
+
+		return {
+			id: `${previous.time}-${point.time}`,
+			color,
+			points: [previous, point],
+		};
+	});
 }
 
 function filterHistory(
