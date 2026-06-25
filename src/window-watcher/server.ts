@@ -25,6 +25,8 @@ const CACHE_MS = 55 * 1000;
 const DEFAULT_SAMPLE_INTERVAL_MS = process.env.RAILWAY_ENVIRONMENT_ID
 	? 5 * 60 * 1000
 	: 60 * 1000;
+const DEFAULT_WEATHER_CACHE_MS = 4 * 60 * 1000;
+const DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
 
 loadEnv();
 
@@ -42,6 +44,13 @@ const config = {
 	outdoorTrendHours: Number(process.env.OUTDOOR_TREND_HOURS || 3),
 	outdoorTrendDeltaC: Number(process.env.OUTDOOR_TREND_DELTA_C || 0.3),
 	backgroundSampler: process.env.BACKGROUND_SAMPLER !== "false",
+	weatherCacheMs: Number(
+		process.env.WEATHER_CACHE_MS || DEFAULT_WEATHER_CACHE_MS,
+	),
+	weatherRateLimitBackoffMs: Number(
+		process.env.WEATHER_RATE_LIMIT_BACKOFF_MS ||
+			DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS,
+	),
 };
 
 let refreshInFlight: Promise<TadoToken> | null = null;
@@ -49,6 +58,9 @@ let sampleInFlight: Promise<CoolingStatus | null> | null = null;
 let statusCache: { createdAt: number; data: CoolingStatus } | null = null;
 let samplerStarted = false;
 let lastSampleError: { key: string; loggedAt: number } | null = null;
+let outsideWeatherCache: { createdAt: number; data: OutsideWeather } | null =
+	null;
+let weatherRateLimitUntil = 0;
 const tadoDeviceFlows = new Map<string, TadoDeviceFlow>();
 
 type TadoToken = {
@@ -137,26 +149,45 @@ function loadEnv() {
 	}
 }
 
-async function requestJson<T>(url: string, options: RequestInit = {}) {
+function isHttpError(error: unknown, status: number) {
+	return (
+		error instanceof Error &&
+		"status" in error &&
+		(error as { status?: number }).status === status
+	);
+}
+
+async function requestJson<T>(
+	url: string,
+	options: RequestInit & { errorContext?: string } = {},
+) {
+	const { errorContext, ...fetchOptions } = options;
 	const response = await fetch(url, {
-		...options,
-		signal: options.signal || AbortSignal.timeout(config.requestTimeoutMs),
+		...fetchOptions,
+		signal: fetchOptions.signal || AbortSignal.timeout(config.requestTimeoutMs),
 	});
 	const text = await response.text();
-	const data = text ? JSON.parse(text) : {};
+	let data: Record<string, unknown> = {};
+	try {
+		data = text ? JSON.parse(text) : {};
+	} catch {
+		data = {};
+	}
 
 	if (!response.ok) {
 		const message =
 			data.message ||
 			data.error_description ||
 			data.error ||
-			`Request failed with ${response.status}`;
+			`${errorContext || "Request"} failed with ${response.status}`;
 		const error = new Error(message) as Error & {
 			status?: number;
 			details?: unknown;
+			provider?: string;
 		};
 		error.status = response.status;
 		error.details = data;
+		if (errorContext) error.provider = errorContext;
 		throw error;
 	}
 
@@ -421,6 +452,18 @@ async function resolveTadoRooms() {
 }
 
 async function fetchOutsideWeather() {
+	const nowMs = Date.now();
+	if (
+		outsideWeatherCache &&
+		nowMs - outsideWeatherCache.createdAt < config.weatherCacheMs
+	) {
+		return outsideWeatherCache.data;
+	}
+
+	if (outsideWeatherCache && nowMs < weatherRateLimitUntil) {
+		return outsideWeatherCache.data;
+	}
+
 	const now = new Date();
 	const forecastStart = startOfHour(new Date(now.getTime() - 30 * 60 * 1000));
 	const forecastEnd = new Date(now.getTime() + 5 * 60 * 60 * 1000);
@@ -435,25 +478,56 @@ async function fetchOutsideWeather() {
 		last_date: forecastEnd.toISOString(),
 	});
 
-	const [current, forecast] = await Promise.all([
-		requestJson<{
-			weather?: {
-				source_id?: number;
-				timestamp?: string;
-				temperature?: number;
-				relative_humidity?: number;
-			};
-			sources?: Array<WeatherSource>;
-		}>(`https://api.brightsky.dev/current_weather?${currentParams.toString()}`),
-		requestJson<{
-			weather?: Array<{
-				source_id?: number;
-				timestamp?: string;
-				temperature?: number;
-			}>;
-			sources?: Array<WeatherSource>;
-		}>(`https://api.brightsky.dev/weather?${forecastParams.toString()}`),
-	]);
+	let current: {
+		weather?: {
+			source_id?: number;
+			timestamp?: string;
+			temperature?: number;
+			relative_humidity?: number;
+		};
+		sources?: Array<WeatherSource>;
+	};
+	let forecast: {
+		weather?: Array<{
+			source_id?: number;
+			timestamp?: string;
+			temperature?: number;
+		}>;
+		sources?: Array<WeatherSource>;
+	};
+
+	try {
+		[current, forecast] = await Promise.all([
+			requestJson<{
+				weather?: {
+					source_id?: number;
+					timestamp?: string;
+					temperature?: number;
+					relative_humidity?: number;
+				};
+				sources?: Array<WeatherSource>;
+			}>(
+				`https://api.brightsky.dev/current_weather?${currentParams.toString()}`,
+				{ errorContext: "Bright Sky current weather" },
+			),
+			requestJson<{
+				weather?: Array<{
+					source_id?: number;
+					timestamp?: string;
+					temperature?: number;
+				}>;
+				sources?: Array<WeatherSource>;
+			}>(`https://api.brightsky.dev/weather?${forecastParams.toString()}`, {
+				errorContext: "Bright Sky forecast",
+			}),
+		]);
+	} catch (error) {
+		if (isHttpError(error, 429)) {
+			weatherRateLimitUntil = nowMs + config.weatherRateLimitBackoffMs;
+			if (outsideWeatherCache) return outsideWeatherCache.data;
+		}
+		throw error;
+	}
 
 	const currentSource = findWeatherSource(
 		current.sources,
@@ -464,7 +538,7 @@ async function fetchOutsideWeather() {
 		forecast.weather?.find((point) => point.source_id != null)?.source_id,
 	);
 
-	return {
+	const outsideWeather = {
 		current: {
 			temperatureC: current.weather?.temperature,
 			humidityPercent: current.weather?.relative_humidity,
@@ -496,6 +570,9 @@ async function fetchOutsideWeather() {
 				),
 		},
 	} satisfies OutsideWeather;
+
+	outsideWeatherCache = { createdAt: nowMs, data: outsideWeather };
+	return outsideWeather;
 }
 
 function startOfHour(date: Date) {
@@ -984,18 +1061,74 @@ function buildStatusFromHistoryEntry(
 	} satisfies CoolingStatus;
 }
 
+function buildOutsideWeatherFromHistoryEntry(
+	entry: TemperatureHistoryEntry | undefined,
+) {
+	if (!entry?.outside?.temperatureC) return null;
+
+	const forecastPoints = (entry.recommendation?.forecast?.points || [])
+		.map((point) => ({
+			time: point.time,
+			timestamp: new Date(point.time).getTime(),
+			temperatureC: point.temperatureC,
+		}))
+		.filter(
+			(
+				point,
+			): point is {
+				time: string;
+				timestamp: number;
+				temperatureC: number;
+			} =>
+				Boolean(point.time) &&
+				Number.isFinite(point.timestamp) &&
+				Number.isFinite(point.temperatureC),
+		);
+
+	return {
+		current: {
+			temperatureC: entry.outside.temperatureC,
+			humidityPercent: entry.outside.humidityPercent,
+			observedAt: entry.outside.observedAt || entry.checkedAt,
+			source: entry.outside.source,
+		},
+		forecast: entry.recommendation?.forecast
+			? {
+					source: entry.recommendation.forecast.source,
+					points: forecastPoints,
+				}
+			: undefined,
+	} satisfies OutsideWeather;
+}
+
+async function readOutsideWeatherWithFallback(
+	history: TemperatureHistoryEntry[],
+) {
+	try {
+		return await fetchOutsideWeather();
+	} catch (error) {
+		if (!isHttpError(error, 429)) throw error;
+
+		const fallback = buildOutsideWeatherFromHistoryEntry(history.at(-1));
+		if (!fallback) throw error;
+
+		outsideWeatherCache = { createdAt: Date.now(), data: fallback };
+		return fallback;
+	}
+}
+
 async function collectFreshCoolingStatus() {
+	const previousHistory = await readHistory(
+		Math.ceil(config.outdoorTrendHours * 60),
+	);
 	const [target, outside] = await Promise.all([
 		resolveTadoRooms(),
-		fetchOutsideWeather(),
+		readOutsideWeatherWithFallback(previousHistory),
 	]);
 	const outsideC = outside.current?.temperatureC;
 
 	if (outsideC == null) throw new Error("Could not read outside temperature.");
 
-	const previousHistory = await readHistory(
-		Math.ceil(config.outdoorTrendHours * 60),
-	);
 	const checkedAt = new Date().toISOString();
 	const trend = analyzeOutdoorTrend(previousHistory, outsideC, checkedAt);
 	const forecast = analyzeForecast(outside, outsideC, checkedAt);

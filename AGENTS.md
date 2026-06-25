@@ -90,6 +90,8 @@ Environment variables:
 - `TADO_ZONE_ID`, optional override to restrict rooms
 - `COOLING_MARGIN_C`, default `2`
 - `REQUEST_TIMEOUT_MS`, default `5000`
+- `WEATHER_CACHE_MS`, default `240000`. Bright Sky current/forecast responses are reused briefly to avoid rate limits from dashboard refreshes and local background sampling.
+- `WEATHER_RATE_LIMIT_BACKOFF_MS`, default `600000`. After a Bright Sky `429`, the server reuses cached or last recorded outdoor weather during this backoff window.
 - `SAMPLE_INTERVAL_MS`, optional; defaults to `60000` locally and `300000` on Railway
 - `BACKGROUND_SAMPLER`, optional. Set to `false` for Railway Serverless/App Sleeping so the web service does not keep itself awake with periodic outbound tado/weather calls.
 - `SAMPLE_TRIGGER_TOKEN`, secret bearer token required by `POST /api/sample` for Railway cron-triggered sampling.
