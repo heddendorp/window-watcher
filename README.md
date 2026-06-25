@@ -6,13 +6,12 @@ Window Watcher compares tado room temperatures with nearby outdoor weather for U
 
 ```bash
 pnpm install
-pnpm run build
-NODE_ENV=production PORT=3000 pnpm start
+pnpm dev
 ```
 
-The app runs on [http://localhost:3000](http://localhost:3000).
+The app runs on [http://localhost:3000](http://localhost:3000). The local dev runner rebuilds and reloads the browser when source files change.
 
-Note: the generated TanStack Start dev server currently starts but returns Nitro's `Vite environment "ssr" is unavailable` for page requests in this workspace. Use the production-mode command above until that generated dev-worker issue is resolved.
+Note: the generated TanStack Start Vite dev server currently starts but returns Nitro's `Vite environment "ssr" is unavailable` for page requests in this workspace. It is still available as `pnpm run dev:vite` for debugging that upstream stack, while `pnpm dev` uses the working auto-reload runner.
 
 ## Environment
 

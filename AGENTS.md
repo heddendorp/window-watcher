@@ -116,7 +116,7 @@ Environment variables:
 ## Known Gotchas
 
 - The production launcher `scripts/start-railway.mjs` imports the built server-only chunk and starts the background sampler before starting Nitro. This keeps one-minute sampling active while the Railway web service is running.
-- `pnpm dev` currently starts Vite but requests fail inside Nitro with `Vite environment "ssr" is unavailable`. The production build and `NODE_ENV=production PORT=3000 pnpm start` path work. This appears to be in the generated TanStack Start/Nitro dev worker stack rather than the Window Watcher route code, because `pnpm run build` passes and the built server serves the app.
+- `pnpm dev` uses `scripts/dev-local.mjs` because the generated Vite/Nitro dev worker currently fails with `Vite environment "ssr" is unavailable`. The local dev runner rebuilds on file changes, restarts the built app on an internal port, proxies `localhost:3000`, and injects a browser reload event stream.
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.
 - Railway cron exists, but its documented minimum frequency is five minutes. Keep the app as an always-on service for one-minute measurements.
