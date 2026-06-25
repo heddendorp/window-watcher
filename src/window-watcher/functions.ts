@@ -31,6 +31,12 @@ async function requireAuthorizedUser() {
 		);
 	}
 
+	if (!process.env.CLERK_SECRET_KEY) {
+		throw new Error(
+			"CLERK_SECRET_KEY must be set before Window Watcher can expose temperature data.",
+		);
+	}
+
 	const authState = await auth();
 	if (!authState.isAuthenticated) {
 		throw new Error("Sign in with Google to view Window Watcher.");

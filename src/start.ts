@@ -6,6 +6,8 @@ const csrfMiddleware = createCsrfMiddleware({
 });
 
 function shouldRegisterClerkMiddleware() {
+	if (!process.env.CLERK_SECRET_KEY) return false;
+
 	if (
 		process.env.RAILWAY_ENVIRONMENT_ID ||
 		process.env.RAILWAY_PROJECT_ID ||
