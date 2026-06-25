@@ -1,7 +1,7 @@
 import { SignInButton, UserButton, useUser } from "@clerk/tanstack-react-start";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import {
 	CartesianGrid,
 	Line,
@@ -27,6 +27,7 @@ type RangeMode = "4h" | "16h" | "24h" | "48h" | "week";
 const roomColors = ["#0f8b5f", "#b03a2e", "#a56b00", "#6750a4", "#b35c14"];
 const outsideColor = "#1f789d";
 const mainChartCurveType = "basis";
+const sparklineCurveType = mainChartCurveType;
 const sparklineRiseColor = "#d23f36";
 const sparklineFallColor = "#0b8a61";
 const sparklineFlatColor = "#6f7c75";
@@ -379,13 +380,15 @@ function Sparkline({
 }: {
 	points: Array<{ time: number; value: number }>;
 }) {
+	const gradientId = `sparkline-${useId().replaceAll(/[^a-zA-Z0-9_-]/g, "")}`;
+
 	if (points.length < 2) return <div className="h-16" />;
 
 	const min = Math.min(...points.map((point) => point.value));
 	const max = Math.max(...points.map((point) => point.value));
 	const padding = Math.max(0.15, (max - min) * 0.2);
 	const domain = [min - padding, max + padding];
-	const segments = buildSparklineSegments(points);
+	const gradientStops = buildSparklineGradientStops(points);
 
 	return (
 		<div className="mt-2 h-16 w-full">
@@ -401,6 +404,17 @@ function Sparkline({
 						type="number"
 					/>
 					<YAxis domain={domain} hide />
+					<defs>
+						<linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0">
+							{gradientStops.map((stop) => (
+								<stop
+									key={stop.id}
+									offset={`${stop.offset}%`}
+									stopColor={stop.color}
+								/>
+							))}
+						</linearGradient>
+					</defs>
 					<Tooltip
 						content={<SparklineTooltip />}
 						cursor={{ stroke: "#9aaba3", strokeWidth: 1 }}
@@ -418,22 +432,18 @@ function Sparkline({
 						isAnimationActive={false}
 						stroke="transparent"
 						strokeWidth={8}
-						type="monotone"
+						type={sparklineCurveType}
 					/>
-					{segments.map((segment) => (
-						<Line
-							activeDot={false}
-							data={segment.points}
-							dataKey="value"
-							dot={false}
-							isAnimationActive={false}
-							key={segment.id}
-							stroke={segment.color}
-							strokeLinecap="round"
-							strokeWidth={3}
-							type="linear"
-						/>
-					))}
+					<Line
+						activeDot={false}
+						dataKey="value"
+						dot={false}
+						isAnimationActive={false}
+						stroke={`url(#${gradientId})`}
+						strokeLinecap="round"
+						strokeWidth={3}
+						type={sparklineCurveType}
+					/>
 				</LineChart>
 			</ResponsiveContainer>
 		</div>
@@ -457,25 +467,37 @@ function SparklineTooltip({
 	);
 }
 
-function buildSparklineSegments(
+function buildSparklineGradientStops(
 	points: Array<{ time: number; value: number }>,
 ) {
-	return points.slice(1).map((point, index) => {
-		const previous = points[index];
-		const delta = point.value - previous.value;
-		const color =
-			Math.abs(delta) < 0.03
-				? sparklineFlatColor
-				: delta > 0
-					? sparklineRiseColor
-					: sparklineFallColor;
+	const firstTime = points[0].time;
+	const lastTime = points.at(-1)?.time ?? firstTime;
+	const duration = Math.max(1, lastTime - firstTime);
+	const stops: Array<{
+		id: string;
+		color: string;
+		offset: number;
+	}> = [];
 
-		return {
-			id: `${previous.time}-${point.time}`,
-			color,
-			points: [previous, point],
-		};
-	});
+	for (let index = 1; index < points.length; index += 1) {
+		const previous = points[index - 1];
+		const point = points[index];
+		const color = getSparklineTrendColor(point.value - previous.value);
+		const startOffset = ((previous.time - firstTime) / duration) * 100;
+		const endOffset = ((point.time - firstTime) / duration) * 100;
+
+		stops.push(
+			{ id: `${index}-start`, color, offset: startOffset },
+			{ id: `${index}-end`, color, offset: endOffset },
+		);
+	}
+
+	return stops;
+}
+
+function getSparklineTrendColor(delta: number) {
+	if (Math.abs(delta) < 0.03) return sparklineFlatColor;
+	return delta > 0 ? sparklineRiseColor : sparklineFallColor;
 }
 
 function filterHistory(
