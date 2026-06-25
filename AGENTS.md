@@ -93,7 +93,7 @@ Environment variables:
 - `WEATHER_CACHE_MS`, default `240000`. Bright Sky current/forecast responses are reused briefly to avoid rate limits from dashboard refreshes and local background sampling.
 - `WEATHER_RATE_LIMIT_BACKOFF_MS`, default `600000`. After a Bright Sky `429`, the server reuses cached or last recorded outdoor weather during this backoff window.
 - `TADO_RATE_LIMIT_BACKOFF_MS`, default `600000`. After a tado `429`, the server pauses fresh tado calls and serves the last saved readings during this backoff window.
-- `SAMPLE_INTERVAL_MS`, optional; defaults to `60000` locally and `300000` on Railway
+- `SAMPLE_INTERVAL_MS`, optional; defaults to `60000` locally and `600000` on Railway. The server reuses the last saved sample inside this interval, so dashboard refreshes do not trigger extra tado reads.
 - `BACKGROUND_SAMPLER`, optional. Set to `false` for Railway Serverless/App Sleeping so the web service does not keep itself awake with periodic outbound tado/weather calls.
 - `SAMPLE_TRIGGER_TOKEN`, secret bearer token required by `POST /api/sample` for Railway cron-triggered sampling.
 - `OUTDOOR_TREND_HOURS`, default `3`
@@ -127,7 +127,7 @@ Environment variables:
 - `pnpm dev` uses the standard TanStack Start Vite dev server. The explicit `nitro/vite` plugin is loaded only for `vite build`; loading it during `vite dev` caused Nitro's dev worker to fail with `Vite environment "ssr" is unavailable` on this dependency set.
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.
-- Railway cron exists, but its documented minimum frequency is five minutes. Keep the app as an always-on web service so the dashboard remains available; Railway production sampling defaults to five minutes.
+- Railway cron exists, but its documented minimum frequency is five minutes. Keep the app as an always-on web service so the dashboard remains available; Railway production sampling is configured at ten minutes.
 - Railway's "Login with Railway" is for authenticating Railway users/resources, not for locking this dashboard to one Google account. Clerk is the chosen app auth provider; configure Google sign-in in Clerk and set the Clerk variables on Railway.
 - The public GitHub repository must never include `.env`, `.tado-token.json`, `data/temperature-history.jsonl`, Clerk secrets, tado tokens, or Railway tokens.
 

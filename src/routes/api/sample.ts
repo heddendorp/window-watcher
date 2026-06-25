@@ -14,9 +14,17 @@ export const Route = createFileRoute("/api/sample")({
 				}
 
 				const status = await recordCoolingStatusSample("cron");
+				if (!status) {
+					return Response.json({
+						ok: true,
+						skipped: true,
+						reason: "rate_limited",
+					});
+				}
 
 				return Response.json({
 					ok: true,
+					skipped: false,
 					checkedAt: status.checkedAt,
 					outsideC: status.outside.temperatureC,
 					roomCount: status.rooms.length,

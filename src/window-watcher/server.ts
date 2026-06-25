@@ -23,7 +23,7 @@ const HISTORY_FILE = path.join(DATA_DIR, "temperature-history.jsonl");
 const TADO_CLIENT_ID = "1bb50063-6b0c-4d11-bd99-387f4a91cc46";
 const CACHE_MS = 55 * 1000;
 const DEFAULT_SAMPLE_INTERVAL_MS = process.env.RAILWAY_ENVIRONMENT_ID
-	? 5 * 60 * 1000
+	? 10 * 60 * 1000
 	: 60 * 1000;
 const DEFAULT_WEATHER_CACHE_MS = 4 * 60 * 1000;
 const DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
@@ -1049,10 +1049,12 @@ export async function readHistory(limit = 960) {
 
 function buildStatusFromHistoryEntry(
 	entry: TemperatureHistoryEntry | undefined,
-	error: Error,
+	error?: Error,
+	options: { stale?: boolean } = {},
 ) {
 	if (!entry?.outside?.temperatureC) return null;
 
+	const stale = options.stale ?? Boolean(error);
 	const outsideC = entry.outside.temperatureC;
 	const rooms = entry.rooms.map((room) => ({
 		...room,
@@ -1065,10 +1067,10 @@ function buildStatusFromHistoryEntry(
 	);
 
 	return {
-		checkedAt: new Date().toISOString(),
+		checkedAt: stale ? new Date().toISOString() : entry.checkedAt,
 		lastFreshAt: entry.checkedAt,
-		stale: true,
-		staleReason: error.message,
+		stale,
+		staleReason: stale ? error?.message : undefined,
 		location: entry.location || {
 			label: config.locationLabel,
 			latitude: config.latitude,
@@ -1248,6 +1250,8 @@ async function sampleCoolingStatus(reason = "interval") {
 		})
 		.catch(async (error: Error) => {
 			logSampleError(reason, error);
+			if (isHttpError(error, 429)) return null;
+
 			const history = await readHistory(1);
 			const fallback = buildStatusFromHistoryEntry(history.at(-1), error);
 			if (fallback) statusCache = { createdAt: Date.now(), data: fallback };
@@ -1274,7 +1278,7 @@ function logSampleError(reason: string, error: Error) {
 export async function recordCoolingStatusSample(reason = "manual") {
 	const sampled = await sampleCoolingStatus(reason);
 	if (!sampled) {
-		throw new Error("Could not record a fresh temperature sample.");
+		return null;
 	}
 	return sampled;
 }
@@ -1284,14 +1288,30 @@ async function getCoolingStatus() {
 		return { ...statusCache.data, cached: true };
 	}
 
+	const history = await readHistory(1);
+	const latestHistory = history.at(-1);
+	const latestHistoryTime = latestHistory
+		? new Date(latestHistory.checkedAt).getTime()
+		: Number.NaN;
+	if (
+		Number.isFinite(latestHistoryTime) &&
+		Date.now() - latestHistoryTime < config.sampleIntervalMs
+	) {
+		const recent = buildStatusFromHistoryEntry(latestHistory, undefined, {
+			stale: false,
+		});
+		if (recent) {
+			statusCache = { createdAt: Date.now(), data: recent };
+			return recent;
+		}
+	}
+
 	const sampled = await sampleCoolingStatus("request");
 	if (sampled) return sampled;
 
-	const history = await readHistory(1);
-	const fallback = buildStatusFromHistoryEntry(
-		history.at(-1),
-		new Error("Fresh readings are temporarily unavailable."),
-	);
+	const fallback = buildStatusFromHistoryEntry(latestHistory, undefined, {
+		stale: false,
+	});
 	if (!fallback) {
 		throw new Error("Could not read fresh temperatures and no history exists.");
 	}
