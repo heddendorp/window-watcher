@@ -26,6 +26,7 @@ type RangeMode = "4h" | "16h" | "24h" | "48h" | "week";
 
 const roomColors = ["#0f8b5f", "#b03a2e", "#a56b00", "#6750a4", "#b35c14"];
 const outsideColor = "#1f789d";
+const mainChartCurveType = "natural";
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 
 function App() {
@@ -143,13 +144,9 @@ function Dashboard({
 		() => buildChartRows(filterHistory(history, rangeMode), status.rooms),
 		[history, rangeMode, status.rooms],
 	);
-	const smoothedChartRows = useMemo(
-		() => smoothChartRows(chartRows, status.rooms, rangeMode),
-		[chartRows, rangeMode, status.rooms],
-	);
 	const chartScale = useMemo(
-		() => buildTemperatureScale(smoothedChartRows, status.rooms),
-		[smoothedChartRows, status.rooms],
+		() => buildTemperatureScale(chartRows, status.rooms),
+		[chartRows, status.rooms],
 	);
 	const legendItems = [
 		{ label: "Outside", color: outsideColor },
@@ -268,7 +265,7 @@ function Dashboard({
 				<div className="h-[18rem] w-full sm:h-[22rem]">
 					<ResponsiveContainer height="100%" width="100%">
 						<LineChart
-							data={smoothedChartRows}
+							data={chartRows}
 							margin={{ top: 8, right: 18, bottom: 0, left: 0 }}
 						>
 							<CartesianGrid stroke="#d9e5de" vertical={false} />
@@ -301,7 +298,7 @@ function Dashboard({
 								name="Outside"
 								stroke={outsideColor}
 								strokeWidth={3}
-								type="monotone"
+								type={mainChartCurveType}
 							/>
 							{status.rooms.map((room, index) => (
 								<Line
@@ -312,7 +309,7 @@ function Dashboard({
 									name={room.zoneName}
 									stroke={roomColors[index % roomColors.length]}
 									strokeWidth={2.5}
-									type="monotone"
+									type={mainChartCurveType}
 								/>
 							))}
 						</LineChart>
@@ -470,55 +467,6 @@ function buildChartRows(
 
 		return row;
 	});
-}
-
-function smoothChartRows(
-	rows: Array<Record<string, number | string | null>>,
-	rooms: Array<RoomReading>,
-	mode: RangeMode,
-) {
-	const windowMs = getSmoothingWindowMs(mode);
-	const keys = ["outside", ...rooms.map((room) => `room-${room.zoneId}`)];
-
-	return rows.map((row, index) => {
-		const currentTime = new Date(String(row.time)).getTime();
-		if (!Number.isFinite(currentTime)) return row;
-
-		const smoothed = { ...row };
-		for (const key of keys) {
-			const values: Array<number> = [];
-			for (let offset = index; offset >= 0; offset -= 1) {
-				const candidate = rows[offset];
-				const candidateTime = new Date(String(candidate.time)).getTime();
-				if (!Number.isFinite(candidateTime)) continue;
-				if (currentTime - candidateTime > windowMs) break;
-
-				const value = candidate[key];
-				if (typeof value === "number") values.push(value);
-			}
-
-			if (values.length >= 2) {
-				smoothed[key] =
-					values.reduce((sum, value) => sum + value, 0) / values.length;
-			}
-		}
-
-		return smoothed;
-	});
-}
-
-function getSmoothingWindowMs(mode: RangeMode) {
-	const minutes =
-		mode === "4h"
-			? 12
-			: mode === "16h"
-				? 24
-				: mode === "24h"
-					? 36
-					: mode === "48h"
-						? 60
-						: 180;
-	return minutes * 60 * 1000;
 }
 
 function buildTemperatureScale(
