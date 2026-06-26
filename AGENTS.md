@@ -1,5 +1,11 @@
 # Window Watcher Project Context
 
+## Agent Maintenance
+
+Keep this file current. When future work uncovers important project context, operational details, deployment changes, environment requirements, recurring gotchas, or decisions that would help the next agent, add them to this file in the relevant section before finishing the task.
+
+Do not record secret values here. It is fine to document secret names, where they are configured, and how they are used, but never include `.env` values, tado token contents, Clerk secrets, Railway tokens, or sample trigger tokens.
+
 ## Scaffold
 
 The current application was rearchitected from the previous local Node/static app into a TanStack Start project on 2026-06-25.
