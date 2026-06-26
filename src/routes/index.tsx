@@ -944,8 +944,8 @@ function buildTwoHourForecastRows(
 	rooms: Array<RoomReading>,
 ) {
 	const checkedTime = new Date(status.checkedAt).getTime();
-	const forecastStart = startOfHour(checkedTime - 30 * 60 * 1000);
-	const forecastEnd = forecastStart + 2 * 60 * 60 * 1000;
+	const forecastStart = checkedTime;
+	const forecastEnd = checkedTime + 2 * 60 * 60 * 1000;
 	const forecastPoints = (status.recommendation.forecast?.points || [])
 		.map((point) => ({
 			time: new Date(point.time).getTime(),
@@ -983,12 +983,6 @@ function buildTwoHourForecastRows(
 		outsideForecast: point.temperatureC,
 		...emptyRooms,
 	}));
-}
-
-function startOfHour(time: number) {
-	const date = new Date(time);
-	date.setMinutes(0, 0, 0);
-	return date.getTime();
 }
 
 function getForecastPointAt(
