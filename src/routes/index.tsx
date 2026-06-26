@@ -6,6 +6,7 @@ import {
 	CartesianGrid,
 	Line,
 	LineChart,
+	ReferenceLine,
 	ResponsiveContainer,
 	Tooltip,
 	XAxis,
@@ -161,18 +162,22 @@ function Dashboard({
 		() => buildChartRows(filteredHistory, status.rooms, status),
 		[filteredHistory, status],
 	);
+	const xAxisTicks = useMemo(
+		() => buildXAxisTicks(chartRows, rangeMode),
+		[chartRows, rangeMode],
+	);
+	const midnightMarkers = useMemo(
+		() => buildMidnightMarkers(chartRows),
+		[chartRows],
+	);
 	const chartScale = useMemo(
 		() => buildTemperatureScale(chartRows, status.rooms),
 		[chartRows, status.rooms],
 	);
-	const legendItems = [
-		{ label: "Outside", color: outsideColor },
-		{ label: "2h forecast", color: outsideForecastColor },
-		...status.rooms.map((room, index) => ({
-			label: room.zoneName,
-			color: roomColors[index % roomColors.length],
-		})),
-	];
+	const legendItems = useMemo(
+		() => buildLegendItems(chartRows, status.rooms),
+		[chartRows, status.rooms],
+	);
 
 	return (
 		<main className="mx-auto min-h-screen max-w-7xl px-3 py-3 text-slate-900 sm:px-5 sm:py-5">
@@ -287,6 +292,7 @@ function Dashboard({
 					<ResponsiveContainer height="100%" width="100%">
 						<LineChart
 							data={chartRows}
+							key={rangeMode}
 							margin={{ top: 8, right: 18, bottom: 0, left: 0 }}
 							onMouseLeave={() => setActiveChartLineKey(null)}
 							onMouseMove={(nextState) => {
@@ -301,13 +307,26 @@ function Dashboard({
 							<XAxis
 								dataKey="timestamp"
 								domain={["dataMin", "dataMax"]}
-								minTickGap={28}
+								minTickGap={rangeMode === "week" ? 56 : 32}
 								scale="time"
 								stroke="#64746d"
-								tickFormatter={(value) => formatTime(new Date(value))}
+								tickFormatter={(value) =>
+									formatChartTick(Number(value), rangeMode)
+								}
 								tickLine={false}
+								ticks={xAxisTicks}
 								type="number"
 							/>
+							{midnightMarkers.map((marker) => (
+								<ReferenceLine
+									ifOverflow="extendDomain"
+									key={marker}
+									stroke="#aab9b1"
+									strokeDasharray="3 5"
+									strokeOpacity={0.7}
+									x={marker}
+								/>
+							))}
 							<YAxis
 								domain={[chartScale.min, chartScale.max]}
 								stroke="#64746d"
@@ -822,7 +841,102 @@ function buildChartRows(
 	});
 
 	const forecastRows = buildTwoHourForecastRows(status, rooms);
-	return [...rows, ...forecastRows];
+	return [...rows, ...forecastRows].sort(
+		(left, right) => Number(left.timestamp) - Number(right.timestamp),
+	);
+}
+
+function buildLegendItems(
+	rows: Array<Record<string, number | string | null>>,
+	rooms: Array<RoomReading>,
+) {
+	const hasValue = (key: string) =>
+		rows.some((row) => typeof row[key] === "number");
+
+	return [
+		hasValue("outside") ? { label: "Outside", color: outsideColor } : null,
+		hasValue("outsideForecast")
+			? { label: "2h forecast", color: outsideForecastColor }
+			: null,
+		...rooms.map((room, index) =>
+			hasValue(`room-${room.zoneId}`)
+				? {
+						label: room.zoneName,
+						color: roomColors[index % roomColors.length],
+					}
+				: null,
+		),
+	].filter((item): item is { label: string; color: string } => item != null);
+}
+
+function buildXAxisTicks(
+	rows: Array<Record<string, number | string | null>>,
+	mode: RangeMode,
+) {
+	const times = getChartTimeExtent(rows);
+	if (!times) return [];
+
+	const [min, max] = times;
+	if (mode === "week") {
+		return buildLocalTimeTicks(min, max, 24 * 60 * 60 * 1000, 12);
+	}
+
+	const stepHours =
+		mode === "4h" ? 1 : mode === "16h" ? 4 : mode === "24h" ? 6 : 12;
+	return buildLocalTimeTicks(min, max, stepHours * 60 * 60 * 1000);
+}
+
+function buildLocalTimeTicks(
+	min: number,
+	max: number,
+	stepMs: number,
+	hour = 0,
+) {
+	const first = new Date(min);
+	first.setMinutes(0, 0, 0);
+	first.setHours(hour);
+	while (first.getTime() < min) {
+		first.setTime(first.getTime() + stepMs);
+	}
+
+	const ticks = [];
+	for (let tick = first.getTime(); tick <= max; tick += stepMs) {
+		ticks.push(tick);
+	}
+	return ticks;
+}
+
+function buildMidnightMarkers(
+	rows: Array<Record<string, number | string | null>>,
+) {
+	const times = getChartTimeExtent(rows);
+	if (!times) return [];
+
+	const [min, max] = times;
+	const first = new Date(min);
+	first.setHours(0, 0, 0, 0);
+	if (first.getTime() <= min) first.setDate(first.getDate() + 1);
+
+	const markers = [];
+	for (let marker = first.getTime(); marker < max; ) {
+		markers.push(marker);
+		first.setDate(first.getDate() + 1);
+		marker = first.getTime();
+	}
+	return markers;
+}
+
+function getChartTimeExtent(
+	rows: Array<Record<string, number | string | null>>,
+) {
+	const timestamps = rows
+		.map((row) => row.timestamp)
+		.filter(
+			(value): value is number =>
+				typeof value === "number" && Number.isFinite(value),
+		);
+	if (!timestamps.length) return null;
+	return [Math.min(...timestamps), Math.max(...timestamps)] as const;
 }
 
 function buildTwoHourForecastRows(
@@ -996,4 +1110,25 @@ function formatTime(date: Date) {
 		hour: "2-digit",
 		minute: "2-digit",
 	}).format(date);
+}
+
+function formatChartTick(value: number, mode: RangeMode) {
+	const date = new Date(value);
+	if (mode === "week") {
+		return new Intl.DateTimeFormat("en-GB", {
+			day: "2-digit",
+			month: "2-digit",
+			weekday: "short",
+		}).format(date);
+	}
+
+	if (mode === "48h") {
+		return new Intl.DateTimeFormat("en-GB", {
+			day: "2-digit",
+			hour: "2-digit",
+			minute: "2-digit",
+		}).format(date);
+	}
+
+	return formatTime(date);
 }
