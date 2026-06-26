@@ -178,6 +178,10 @@ function Dashboard({
 		() => buildLegendItems(chartRows, status.rooms),
 		[chartRows, status.rooms],
 	);
+	const handleRangeModeChange = (mode: RangeMode) => {
+		setActiveChartLineKey(null);
+		setRangeMode(mode);
+	};
 
 	return (
 		<main className="mx-auto min-h-screen max-w-7xl px-3 py-3 text-slate-900 sm:px-5 sm:py-5">
@@ -264,7 +268,7 @@ function Dashboard({
 						{(["4h", "16h", "24h", "48h", "week"] as const).map((mode) => (
 							<Button
 								key={mode}
-								onClick={() => setRangeMode(mode)}
+								onClick={() => handleRangeModeChange(mode)}
 								size="sm"
 								type="button"
 								variant={rangeMode === mode ? "default" : "ghost"}
@@ -292,7 +296,6 @@ function Dashboard({
 					<ResponsiveContainer height="100%" width="100%">
 						<LineChart
 							data={chartRows}
-							key={rangeMode}
 							margin={{ top: 8, right: 18, bottom: 0, left: 0 }}
 							onMouseLeave={() => setActiveChartLineKey(null)}
 							onMouseMove={(nextState) => {
