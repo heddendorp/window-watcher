@@ -1034,6 +1034,60 @@ async function appendHistory(status: CoolingStatus) {
 	});
 }
 
+async function appendOutsideHistory(
+	outside: OutsideWeather,
+	checkedAt: string,
+	previousHistory: Array<TemperatureHistoryEntry>,
+) {
+	const outsideC = outside.current?.temperatureC;
+	if (outsideC == null) return null;
+
+	await fs.mkdir(DATA_DIR, { recursive: true });
+
+	const trend = analyzeOutdoorTrend(previousHistory, outsideC, checkedAt);
+	const forecast = analyzeForecast(outside, outsideC, checkedAt);
+	const entry: TemperatureHistoryEntry = {
+		checkedAt,
+		location: {
+			label: config.locationLabel,
+			latitude: config.latitude,
+			longitude: config.longitude,
+		},
+		outside: {
+			temperatureC: outsideC,
+			humidityPercent: outside.current?.humidityPercent,
+			observedAt: outside.current?.observedAt,
+			source: outside.current?.source,
+		},
+		rooms: [],
+		recommendation: {
+			outdoorTrend: trend,
+			forecast: forecast
+				? {
+						horizonHours: forecast.horizonHours,
+						minTemperatureC: forecast.minTemperatureC,
+						minAt: forecast.minAt,
+						changeC: forecast.changeC,
+						source: forecast.source,
+						points: forecast.points.map((point) => ({
+							time: point.time,
+							temperatureC: point.temperatureC,
+						})),
+					}
+				: undefined,
+			strategy: "outside-only",
+			thresholdC: outsideC,
+			marginToThresholdC: 0,
+		},
+		marginC: config.coolingMarginC,
+	};
+
+	await fs.appendFile(HISTORY_FILE, `${JSON.stringify(entry)}\n`, {
+		mode: 0o600,
+	});
+	return entry;
+}
+
 export async function readHistory(limit = 960) {
 	try {
 		const raw = await fs.readFile(HISTORY_FILE, "utf8");
@@ -1053,6 +1107,7 @@ function buildStatusFromHistoryEntry(
 	options: { stale?: boolean } = {},
 ) {
 	if (!entry?.outside?.temperatureC) return null;
+	if (!entry.rooms.length) return null;
 
 	const stale = options.stale ?? Boolean(error);
 	const outsideC = entry.outside.temperatureC;
@@ -1171,15 +1226,23 @@ async function collectFreshCoolingStatus() {
 	const previousHistory = await readHistory(
 		Math.ceil(config.outdoorTrendHours * 60),
 	);
-	const [target, outside] = await Promise.all([
-		readTadoRoomsWithRateLimitBackoff(),
-		readOutsideWeatherWithFallback(previousHistory),
-	]);
+	const outside = await readOutsideWeatherWithFallback(previousHistory);
 	const outsideC = outside.current?.temperatureC;
 
 	if (outsideC == null) throw new Error("Could not read outside temperature.");
 
 	const checkedAt = new Date().toISOString();
+
+	let target: Awaited<ReturnType<typeof readTadoRoomsWithRateLimitBackoff>>;
+	try {
+		target = await readTadoRoomsWithRateLimitBackoff();
+	} catch (error) {
+		if (isHttpError(error, 429)) {
+			await appendOutsideHistory(outside, checkedAt, previousHistory);
+		}
+		throw error;
+	}
+
 	const trend = analyzeOutdoorTrend(previousHistory, outsideC, checkedAt);
 	const forecast = analyzeForecast(outside, outsideC, checkedAt);
 	const recommendation = buildTrendVerdict(
@@ -1288,8 +1351,11 @@ async function getCoolingStatus() {
 		return { ...statusCache.data, cached: true };
 	}
 
-	const history = await readHistory(1);
+	const history = await readHistory(
+		Math.max(240, Math.ceil(config.sampleIntervalMs / 60_000) + 10),
+	);
 	const latestHistory = history.at(-1);
+	const latestFullHistory = history.findLast((entry) => entry.rooms.length > 0);
 	const latestHistoryTime = latestHistory
 		? new Date(latestHistory.checkedAt).getTime()
 		: Number.NaN;
@@ -1297,7 +1363,7 @@ async function getCoolingStatus() {
 		Number.isFinite(latestHistoryTime) &&
 		Date.now() - latestHistoryTime < config.sampleIntervalMs
 	) {
-		const recent = buildStatusFromHistoryEntry(latestHistory, undefined, {
+		const recent = buildStatusFromHistoryEntry(latestFullHistory, undefined, {
 			stale: false,
 		});
 		if (recent) {
@@ -1309,7 +1375,7 @@ async function getCoolingStatus() {
 	const sampled = await sampleCoolingStatus("request");
 	if (sampled) return sampled;
 
-	const fallback = buildStatusFromHistoryEntry(latestHistory, undefined, {
+	const fallback = buildStatusFromHistoryEntry(latestFullHistory, undefined, {
 		stale: false,
 	});
 	if (!fallback) {

@@ -118,6 +118,7 @@ Environment variables:
 - `server.ts` owns tado token refresh, Bright Sky DWD observation reads, Bright Sky/DWD forecast reads, recommendation logic, and JSONL history persistence.
 - The production web service can run in Railway Serverless/App Sleeping mode with `BACKGROUND_SAMPLER=false`. In that mode, fresh samples are taken on dashboard requests instead of an always-on interval.
 - `POST /api/sample` records one fresh sample for Railway cron. It requires `Authorization: Bearer $SAMPLE_TRIGGER_TOKEN` and must not be exposed without that secret.
+- If tado is rate-limited or throws after weather was fetched, the sampler records an outside-only history row with `rooms: []`. These rows keep outdoor history complete for charts and trend analysis, but must not be treated as the current room dashboard status.
 - The dashboard route uses TanStack Query with a 60 second refetch interval.
 - Recharts powers the main chart and room sparklines. The sparklines use one smoothed line with a time-based SVG gradient for rising, falling, and neutral room changes.
 
