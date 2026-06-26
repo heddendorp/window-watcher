@@ -352,7 +352,7 @@ function Dashboard({
 								labelFormatter={(value) => formatTime(new Date(value))}
 							/>
 							<Line
-								connectNulls={false}
+								connectNulls
 								dataKey="outside"
 								dot={false}
 								name="Outside"
@@ -372,7 +372,7 @@ function Dashboard({
 							/>
 							{status.rooms.map((room, index) => (
 								<Line
-									connectNulls={false}
+									connectNulls
 									dataKey={`room-${room.zoneId}`}
 									dot={false}
 									key={room.zoneId}
