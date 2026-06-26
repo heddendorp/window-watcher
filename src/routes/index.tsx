@@ -361,7 +361,7 @@ function Dashboard({
 								type={mainChartCurveType}
 							/>
 							<Line
-								connectNulls={false}
+								connectNulls
 								dataKey="outsideForecast"
 								dot={false}
 								name="2h forecast"
