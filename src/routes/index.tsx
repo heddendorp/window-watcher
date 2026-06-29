@@ -150,6 +150,15 @@ function Dashboard({
 		null,
 	);
 	const latestAt = new Date(status.checkedAt);
+	const measurementAt = new Date(status.lastFreshAt || status.checkedAt);
+	const measurementAge = formatMeasurementAge(
+		measurementAt,
+		new Date(data.generatedAt),
+	);
+	const measurementAgeClass = getMeasurementAgeClass(
+		measurementAge.minutes,
+		status.stale,
+	);
 	const historyCollection = useMemo(
 		() => createHistoryCollection(history),
 		[history],
@@ -194,12 +203,17 @@ function Dashboard({
 							</h1>
 							{authEnabled ? <UserButton /> : null}
 						</div>
-						<p className="mt-1 max-w-4xl text-sm font-medium leading-6 text-slate-600">
-							{status.location.label} · updated {formatTime(latestAt)}
-							{status.stale
-								? ` · stale since ${formatTime(new Date(status.lastFreshAt || status.checkedAt))}`
-								: ""}
-						</p>
+						<div className="mt-1 flex max-w-4xl flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium leading-6 text-slate-600">
+							<span>
+								{status.location.label} · updated {formatTime(latestAt)}
+							</span>
+							<span
+								className={`rounded-full border px-2 py-0.5 text-xs font-extrabold uppercase leading-5 ${measurementAgeClass}`}
+								title={`Last measurement: ${formatTime(measurementAt)}`}
+							>
+								{status.stale ? "stale" : "measured"} {measurementAge.label}
+							</span>
+						</div>
 					</div>
 					<div className="text-left sm:text-right">
 						<p className="text-sm font-semibold uppercase text-slate-500">
@@ -1127,6 +1141,31 @@ function formatTemp(value: number | undefined) {
 
 function formatDelta(value: number) {
 	return `${value >= 0 ? "+" : ""}${value.toFixed(1)} C`;
+}
+
+function formatMeasurementAge(measuredAt: Date, generatedAt: Date) {
+	const ageMs = generatedAt.getTime() - measuredAt.getTime();
+	if (!Number.isFinite(ageMs)) return { label: "unknown", minutes: Infinity };
+
+	const minutes = Math.max(0, Math.floor(ageMs / 60_000));
+	if (minutes < 1) return { label: "just now", minutes };
+	if (minutes < 60) return { label: `${minutes}m ago`, minutes };
+
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return { label: `${hours}h ago`, minutes };
+
+	const days = Math.floor(hours / 24);
+	return { label: `${days}d ago`, minutes };
+}
+
+function getMeasurementAgeClass(minutes: number, stale?: boolean) {
+	if (stale || minutes >= 30) {
+		return "border-red-200 bg-red-50 text-red-700";
+	}
+	if (minutes >= 15) {
+		return "border-amber-200 bg-amber-50 text-amber-800";
+	}
+	return "border-emerald-200 bg-emerald-50 text-emerald-700";
 }
 
 function formatTime(date: Date) {
