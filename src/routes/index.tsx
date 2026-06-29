@@ -857,7 +857,7 @@ function buildChartRows(
 		return row;
 	});
 
-	const forecastRows = buildTwoHourForecastRows(status, rooms, rows);
+	const forecastRows = buildTwoHourForecastRows(status, rooms);
 	return [...rows, ...forecastRows].sort(
 		(left, right) => Number(left.timestamp) - Number(right.timestamp),
 	);
@@ -959,7 +959,6 @@ function getChartTimeExtent(
 function buildTwoHourForecastRows(
 	status: DashboardData["status"],
 	rooms: Array<RoomReading>,
-	measurementRows: Array<Record<string, number | string | null>>,
 ) {
 	const checkedTime = new Date(status.checkedAt).getTime();
 	const forecastStart = startOfHour(checkedTime - 30 * 60 * 1000);
@@ -976,7 +975,6 @@ function buildTwoHourForecastRows(
 		.sort((left, right) => left.time - right.time);
 
 	const startPoint =
-		getMeasuredPointAt(measurementRows, "outside", forecastStart) ??
 		getForecastPointAt(forecastPoints, forecastStart) ??
 		forecastPoints.find((point) => point.time >= forecastStart);
 	const endPoint =
@@ -1008,25 +1006,6 @@ function startOfHour(time: number) {
 	const date = new Date(time);
 	date.setMinutes(0, 0, 0);
 	return date.getTime();
-}
-
-function getMeasuredPointAt(
-	rows: Array<Record<string, number | string | null>>,
-	key: string,
-	targetTime: number,
-) {
-	const points = rows
-		.map((row) => ({
-			time: typeof row.timestamp === "number" ? row.timestamp : Number.NaN,
-			temperatureC: row[key],
-		}))
-		.filter(
-			(point): point is { time: number; temperatureC: number } =>
-				Number.isFinite(point.time) && typeof point.temperatureC === "number",
-		)
-		.sort((left, right) => left.time - right.time);
-
-	return getForecastPointAt(points, targetTime);
 }
 
 function getForecastPointAt(
