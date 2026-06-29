@@ -37,6 +37,7 @@ const sparklineCurveType = mainChartCurveType;
 const sparklineRiseColor = "#d23f36";
 const sparklineFallColor = "#0b8a61";
 const sparklineFlatColor = "#6f7c75";
+const measurementIntervalMs = 10 * 60 * 1000;
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 const localReconnectEnabled = import.meta.env.DEV;
 
@@ -159,6 +160,14 @@ function Dashboard({
 		measurementAge.minutes,
 		status.stale,
 	);
+	const measurementProgress = getMeasurementProgress(
+		measurementAt,
+		new Date(data.generatedAt),
+	);
+	const measurementProgressClass = getMeasurementProgressClass(
+		measurementAge.minutes,
+		status.stale,
+	);
 	const historyCollection = useMemo(
 		() => createHistoryCollection(history),
 		[history],
@@ -268,7 +277,7 @@ function Dashboard({
 				</div>
 			</section>
 
-			<section className="mt-4 rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:mt-5 sm:p-5">
+			<section className="relative mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:mt-5 sm:p-5">
 				<div className="mb-4 flex flex-wrap items-center justify-between gap-3">
 					<div>
 						<h2 className="text-xl font-extrabold text-slate-950 sm:text-2xl">
@@ -401,6 +410,20 @@ function Dashboard({
 							))}
 						</LineChart>
 					</ResponsiveContainer>
+				</div>
+				<div
+					aria-label="Measurement interval elapsed"
+					aria-valuemax={100}
+					aria-valuemin={0}
+					aria-valuenow={Math.round(measurementProgress)}
+					className="absolute inset-x-0 bottom-0 h-1 bg-slate-100"
+					role="progressbar"
+					title={`Next 10 minute sample window: ${Math.round(measurementProgress)}% elapsed`}
+				>
+					<div
+						className={`h-full transition-[width] duration-500 ease-out ${measurementProgressClass}`}
+						style={{ width: `${measurementProgress}%` }}
+					/>
 				</div>
 			</section>
 
@@ -1145,6 +1168,18 @@ function getMeasurementAgeClass(minutes: number, stale?: boolean) {
 		return "border-amber-200 bg-amber-50 text-amber-800";
 	}
 	return "border-emerald-200 bg-emerald-50 text-emerald-700";
+}
+
+function getMeasurementProgress(measuredAt: Date, generatedAt: Date) {
+	const ageMs = generatedAt.getTime() - measuredAt.getTime();
+	if (!Number.isFinite(ageMs)) return 100;
+	return Math.min(100, Math.max(0, (ageMs / measurementIntervalMs) * 100));
+}
+
+function getMeasurementProgressClass(minutes: number, stale?: boolean) {
+	if (stale || minutes >= 30) return "bg-red-500";
+	if (minutes >= 15) return "bg-amber-500";
+	return "bg-emerald-500";
 }
 
 function formatTime(date: Date) {
