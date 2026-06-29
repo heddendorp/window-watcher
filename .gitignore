@@ -13,3 +13,4 @@ data/
 .vinxi
 __unconfig*
 todos.json
+public/app-version.json

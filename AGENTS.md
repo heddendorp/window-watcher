@@ -127,11 +127,12 @@ Environment variables:
 - If tado is rate-limited or throws after weather was fetched, the sampler records an outside-only history row with `rooms: []`. These rows keep outdoor history complete for charts and trend analysis, but must not be treated as the current room dashboard status.
 - The dashboard route uses TanStack Query with a 60 second refetch interval.
 - Recharts powers the main chart and room sparklines. The sparklines use one smoothed line with a time-based SVG gradient for rising, falling, and neutral room changes.
-- The main chart's forecast segment must run from the beginning of the hour containing `status.checkedAt - 30min` until two hours later. If Bright Sky does not provide a forecast point at that start hour, seed the dashed forecast from the measured outside series so the forecast overlaps the latest measurements.
+- The main chart's forecast segment must run from the beginning of the hour containing `status.checkedAt - 30min` until two hours later. The dashed forecast starts from forecast data, not the recorded outside measurement.
+- Production builds run `scripts/write-app-version.mjs` before `vite build`, generating ignored `public/app-version.json`. The client polls this file in production and reloads automatically when the version changes so installed PWA sessions pick up new deployments.
 
 ## Known Gotchas
 
-- The production launcher `scripts/start-railway.mjs` imports the built server-only chunk and starts the background sampler before starting Nitro. The sampler defaults to five minutes on Railway and one minute locally.
+- The production launcher `scripts/start-railway.mjs` imports the built server-only chunk and starts the background sampler before starting Nitro. The sampler defaults to ten minutes on Railway and one minute locally.
 - `pnpm dev` uses the standard TanStack Start Vite dev server. The explicit `nitro/vite` plugin is loaded only for `vite build`; loading it during `vite dev` caused Nitro's dev worker to fail with `Vite environment "ssr" is unavailable` on this dependency set.
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.

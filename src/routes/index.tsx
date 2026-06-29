@@ -38,10 +38,13 @@ const sparklineRiseColor = "#d23f36";
 const sparklineFallColor = "#0b8a61";
 const sparklineFlatColor = "#6f7c75";
 const measurementIntervalMs = 10 * 60 * 1000;
+const appVersionCheckIntervalMs = 60 * 1000;
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 const localReconnectEnabled = import.meta.env.DEV;
 
 function App() {
+	useAppVersionReload();
+
 	if (authEnabled) return <AuthenticatedApp />;
 	return <DashboardQuery authEnabled={false} />;
 }
@@ -133,6 +136,59 @@ function AuthGate() {
 			</section>
 		</main>
 	);
+}
+
+function useAppVersionReload() {
+	useEffect(() => {
+		if (!import.meta.env.PROD) return;
+
+		let active = true;
+		let currentVersion: string | null = null;
+		let reloading = false;
+
+		async function checkVersion() {
+			try {
+				const response = await fetch("/app-version.json", {
+					cache: "no-store",
+				});
+				if (!active || !response.ok) return;
+
+				const payload = (await response.json()) as { version?: unknown };
+				const nextVersion =
+					typeof payload.version === "string" ? payload.version : null;
+				if (!nextVersion) return;
+
+				if (currentVersion && nextVersion !== currentVersion && !reloading) {
+					reloading = true;
+					window.location.reload();
+					return;
+				}
+
+				currentVersion = nextVersion;
+			} catch {
+				// Version checks should never interrupt the dashboard.
+			}
+		}
+
+		const check = () => {
+			void checkVersion();
+		};
+		const handleVisibilityChange = () => {
+			if (document.visibilityState === "visible") check();
+		};
+
+		check();
+		const interval = window.setInterval(check, appVersionCheckIntervalMs);
+		window.addEventListener("focus", check);
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+
+		return () => {
+			active = false;
+			window.clearInterval(interval);
+			window.removeEventListener("focus", check);
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+		};
+	}, []);
 }
 
 function Dashboard({
