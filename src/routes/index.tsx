@@ -38,6 +38,7 @@ const sparklineRiseColor = "#d23f36";
 const sparklineFallColor = "#0b8a61";
 const sparklineFlatColor = "#6f7c75";
 const measurementIntervalMs = 10 * 60 * 1000;
+const measurementProgressRecalculationMs = 5 * 1000;
 const appVersionCheckIntervalMs = 60 * 1000;
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 const localReconnectEnabled = import.meta.env.DEV;
@@ -191,6 +192,22 @@ function useAppVersionReload() {
 	}, []);
 }
 
+function useCurrentTime(initialIso: string, intervalMs: number) {
+	const [currentTime, setCurrentTime] = useState(() => new Date(initialIso));
+
+	useEffect(() => {
+		const tick = () => {
+			setCurrentTime(new Date());
+		};
+
+		tick();
+		const interval = window.setInterval(tick, intervalMs);
+		return () => window.clearInterval(interval);
+	}, [intervalMs]);
+
+	return currentTime;
+}
+
 function Dashboard({
 	authEnabled,
 	data,
@@ -206,11 +223,15 @@ function Dashboard({
 	const [activeChartLineKey, setActiveChartLineKey] = useState<string | null>(
 		null,
 	);
+	const measurementReferenceAt = useCurrentTime(
+		data.generatedAt,
+		measurementProgressRecalculationMs,
+	);
 	const latestAt = new Date(status.checkedAt);
 	const measurementAt = new Date(status.lastFreshAt || status.checkedAt);
 	const measurementAge = formatMeasurementAge(
 		measurementAt,
-		new Date(data.generatedAt),
+		measurementReferenceAt,
 	);
 	const measurementAgeClass = getMeasurementAgeClass(
 		measurementAge.minutes,
@@ -218,7 +239,7 @@ function Dashboard({
 	);
 	const measurementProgress = getMeasurementProgress(
 		measurementAt,
-		new Date(data.generatedAt),
+		measurementReferenceAt,
 	);
 	const measurementProgressClass = getMeasurementProgressClass(
 		measurementAge.minutes,
