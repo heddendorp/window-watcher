@@ -130,6 +130,7 @@ Environment variables:
 - The main chart's forecast segment must run from the beginning of the hour containing `status.checkedAt - 30min` until two hours later. The dashed forecast starts from forecast data, not the recorded outside measurement.
 - Production builds run `scripts/write-app-version.mjs` before `vite build`, generating ignored `public/app-version.json`. The client polls this file in production and reloads automatically when the version changes so installed PWA sessions pick up new deployments.
 - The Railway web service `Window watcher` is explicitly connected to GitHub source `heddendorp/window-watcher` on branch `main`; pushes to `main` should create a Railway deployment automatically. If it stops working, re-run `railway service source connect --repo heddendorp/window-watcher --branch main --service "Window watcher" --environment production --json`.
+- The Railway GitHub source connection was re-applied on 2026-07-01 after CLI-only deploys were not following `main` pushes.
 
 ## Known Gotchas
 
