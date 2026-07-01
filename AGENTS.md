@@ -129,6 +129,7 @@ Environment variables:
 - Recharts powers the main chart and room sparklines. The sparklines use one smoothed line with a time-based SVG gradient for rising, falling, and neutral room changes.
 - The main chart's forecast segment must run from the beginning of the hour containing `status.checkedAt - 30min` until two hours later. The dashed forecast starts from forecast data, not the recorded outside measurement.
 - Production builds run `scripts/write-app-version.mjs` before `vite build`, generating ignored `public/app-version.json`. The client polls this file in production and reloads automatically when the version changes so installed PWA sessions pick up new deployments.
+- The Railway web service `Window watcher` is explicitly connected to GitHub source `heddendorp/window-watcher` on branch `main`; pushes to `main` should create a Railway deployment automatically. If it stops working, re-run `railway service source connect --repo heddendorp/window-watcher --branch main --service "Window watcher" --environment production --json`.
 
 ## Known Gotchas
 
@@ -136,6 +137,7 @@ Environment variables:
 - `pnpm dev` uses the standard TanStack Start Vite dev server. The explicit `nitro/vite` plugin is loaded only for `vite build`; loading it during `vite dev` caused Nitro's dev worker to fail with `Vite environment "ssr" is unavailable` on this dependency set.
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.
+- The Railway sampler service is separate from the web service. It uses the `curlimages/curl` image plus a ten-minute cron to call `POST /api/sample`; do not connect that sampler service to the GitHub repo.
 - Railway cron exists, but its documented minimum frequency is five minutes. Keep the app as an always-on web service so the dashboard remains available; Railway production sampling is configured at ten minutes.
 - Railway's "Login with Railway" is for authenticating Railway users/resources, not for locking this dashboard to one Google account. Clerk is the chosen app auth provider; configure Google sign-in in Clerk and set the Clerk variables on Railway.
 - The public GitHub repository must never include `.env`, `.tado-token.json`, `data/temperature-history.jsonl`, Clerk secrets, tado tokens, or Railway tokens.
