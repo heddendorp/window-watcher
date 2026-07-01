@@ -6,13 +6,31 @@ import {
 	CartesianGrid,
 	Line,
 	LineChart,
+	Tooltip as RechartsTooltip,
 	ReferenceLine,
 	ResponsiveContainer,
-	Tooltip,
 	XAxis,
 	YAxis,
 } from "recharts";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import {
+	Card,
+	CardAction,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "../components/ui/card";
+import { Skeleton } from "../components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "../components/ui/toggle-group";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "../components/ui/tooltip";
 import { createHistoryCollection } from "../window-watcher/db";
 import {
 	getDashboardData,
@@ -27,7 +45,8 @@ import type {
 
 export const Route = createFileRoute("/")({ component: App });
 
-type RangeMode = "4h" | "16h" | "24h" | "48h" | "week";
+const rangeModes = ["4h", "16h", "24h", "48h", "week"] as const;
+type RangeMode = (typeof rangeModes)[number];
 
 const roomColors = ["#0f8b5f", "#b03a2e", "#a56b00", "#6750a4", "#b35c14"];
 const outsideColor = "#1f789d";
@@ -46,8 +65,15 @@ const localReconnectEnabled = import.meta.env.DEV;
 function App() {
 	useAppVersionReload();
 
-	if (authEnabled) return <AuthenticatedApp />;
-	return <DashboardQuery authEnabled={false} />;
+	return (
+		<TooltipProvider>
+			{authEnabled ? (
+				<AuthenticatedApp />
+			) : (
+				<DashboardQuery authEnabled={false} />
+			)}
+		</TooltipProvider>
+	);
 }
 
 function AuthenticatedApp() {
@@ -56,9 +82,7 @@ function AuthenticatedApp() {
 	if (!isLoaded) {
 		return (
 			<main className="mx-auto flex min-h-screen max-w-7xl items-center px-5">
-				<p className="text-lg font-semibold text-slate-700">
-					Loading sign-in state...
-				</p>
+				<LoadingPanel />
 			</main>
 		);
 	}
@@ -78,9 +102,7 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 	if (dashboard.isLoading) {
 		return (
 			<main className="mx-auto flex min-h-screen max-w-7xl items-center px-5">
-				<p className="text-lg font-semibold text-slate-700">
-					Loading temperature readings...
-				</p>
+				<LoadingPanel />
 			</main>
 		);
 	}
@@ -96,14 +118,18 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 	if (dashboard.isError || !dashboard.data) {
 		return (
 			<main className="mx-auto flex min-h-screen max-w-7xl items-center px-5">
-				<section className="rounded-lg border border-red-200 bg-white p-6 shadow-sm">
-					<h1 className="text-2xl font-bold text-slate-950">Window Watcher</h1>
-					<p className="mt-3 text-red-700">
-						{dashboard.error instanceof Error
-							? dashboard.error.message
-							: "Could not load temperatures."}
-					</p>
-				</section>
+				<Card className="border-red-200">
+					<CardHeader>
+						<CardTitle className="text-2xl font-bold text-slate-950">
+							Window Watcher
+						</CardTitle>
+						<CardDescription className="text-red-700">
+							{dashboard.error instanceof Error
+								? dashboard.error.message
+								: "Could not load temperatures."}
+						</CardDescription>
+					</CardHeader>
+				</Card>
 			</main>
 		);
 	}
@@ -118,23 +144,44 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 	);
 }
 
+function LoadingPanel() {
+	return (
+		<Card className="w-full max-w-xl">
+			<CardHeader>
+				<Skeleton className="h-8 w-56" />
+				<Skeleton className="h-5 w-80 max-w-full" />
+			</CardHeader>
+			<CardContent className="grid gap-3">
+				<Skeleton className="h-16 w-full" />
+				<Skeleton className="h-10 w-2/3" />
+			</CardContent>
+		</Card>
+	);
+}
+
+function isRangeMode(value: string): value is RangeMode {
+	return rangeModes.some((mode) => mode === value);
+}
+
 function AuthGate() {
 	return (
 		<main className="mx-auto flex min-h-screen max-w-2xl items-center px-5 text-slate-900">
-			<section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-				<h1 className="text-2xl font-extrabold text-slate-950">
-					Window Watcher
-				</h1>
-				<p className="mt-3 text-sm font-medium leading-6 text-slate-600">
-					Sign in with the authorized Google account to view the flat
-					temperatures and recommendations.
-				</p>
-				<div className="mt-5">
+			<Card>
+				<CardHeader>
+					<CardTitle className="text-2xl font-extrabold text-slate-950">
+						Window Watcher
+					</CardTitle>
+					<CardDescription className="font-medium leading-6">
+						Sign in with the authorized Google account to view the flat
+						temperatures and recommendations.
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
 					<SignInButton mode="modal">
 						<Button type="button">Sign in with Google</Button>
 					</SignInButton>
-				</div>
-			</section>
+				</CardContent>
+			</Card>
 		</main>
 	);
 }
@@ -280,7 +327,7 @@ function Dashboard({
 
 	return (
 		<main className="mx-auto min-h-screen max-w-7xl px-3 py-3 text-slate-900 sm:px-5 sm:py-5">
-			<section className={`main-card ${status.verdict.action}`}>
+			<Card className={`main-card ${status.verdict.action} gap-0 py-0`}>
 				<div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
 					<div className="min-w-0">
 						<div className="flex flex-wrap items-center gap-3">
@@ -293,12 +340,19 @@ function Dashboard({
 							<span>
 								{status.location.label} · updated {formatTime(latestAt)}
 							</span>
-							<span
-								className={`rounded-full border px-2 py-0.5 text-xs font-extrabold uppercase leading-5 ${measurementAgeClass}`}
-								title={`Last measurement: ${formatTime(measurementAt)}`}
-							>
-								{status.stale ? "stale" : "measured"} {measurementAge.label}
-							</span>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Badge
+										className={`font-extrabold uppercase leading-5 ${measurementAgeClass}`}
+										variant="outline"
+									>
+										{status.stale ? "stale" : "measured"} {measurementAge.label}
+									</Badge>
+								</TooltipTrigger>
+								<TooltipContent>
+									Last measurement: {formatTime(measurementAt)}
+								</TooltipContent>
+							</Tooltip>
 						</div>
 					</div>
 					<div className="text-left sm:text-right">
@@ -322,9 +376,12 @@ function Dashboard({
 							</p>
 						</div>
 						{status.stale ? (
-							<p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-								{formatStaleReason(status.staleReason)}
-							</p>
+							<Alert className="mt-2 border-amber-200 bg-amber-50 text-amber-900">
+								<AlertTitle>Fresh readings delayed</AlertTitle>
+								<AlertDescription className="font-semibold text-amber-800">
+									{formatStaleReason(status.staleReason)}
+								</AlertDescription>
+							</Alert>
 						) : null}
 						{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
 							<TadoReconnectPanel />
@@ -335,190 +392,210 @@ function Dashboard({
 							</p>
 						) : null}
 					</div>
-					<div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-						<p className="text-xs font-bold uppercase text-slate-500">
+					<Card className="gap-1 rounded-md border-slate-200 bg-slate-50 px-3 py-2 shadow-none">
+						<CardTitle className="text-xs font-bold uppercase text-slate-500">
 							Outdoor trend
-						</p>
-						<p className="mt-1 text-sm font-semibold text-slate-800">
+						</CardTitle>
+						<CardDescription className="text-sm font-semibold text-slate-800">
 							{status.recommendation.outdoorTrend.direction} ·{" "}
 							{formatDelta(status.recommendation.outdoorTrend.changeC)} over{" "}
 							{status.recommendation.outdoorTrend.hours.toFixed(1)}h
-						</p>
-						<p className="mt-1 text-xs text-slate-600">
+						</CardDescription>
+						<p className="text-xs text-slate-600">
 							Threshold {formatTemp(status.recommendation.thresholdC)}
 							{status.recommendation.forecast?.minTemperatureC == null
 								? ""
 								: ` · next ${status.recommendation.forecast.horizonHours.toFixed(0)}h low ${formatTemp(status.recommendation.forecast.minTemperatureC)}`}
 						</p>
-					</div>
+					</Card>
 				</div>
-			</section>
+			</Card>
 
-			<section className="relative mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:mt-5 sm:p-5">
-				<div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+			<Card className="relative mt-4 gap-0 overflow-hidden rounded-lg border-slate-200 bg-white py-0 shadow-sm sm:mt-5">
+				<CardHeader className="mb-4 flex flex-wrap items-center justify-between gap-3 px-3 pt-3 pb-0 sm:flex-row sm:px-5 sm:pt-5">
 					<div>
-						<h2 className="text-xl font-extrabold text-slate-950 sm:text-2xl">
+						<CardTitle className="text-xl font-extrabold text-slate-950 sm:text-2xl">
 							Temperature Trends
-						</h2>
-						<p className="mt-1 text-sm font-medium text-slate-600">
+						</CardTitle>
+						<CardDescription className="mt-1 text-sm font-medium text-slate-600">
 							{rangeMode} · {filteredHistory.length} saved measurements
-						</p>
+						</CardDescription>
 					</div>
-					<div className="range-scroll flex w-full gap-1 overflow-x-auto rounded-md border border-slate-200 bg-white p-1 sm:w-auto">
-						{(["4h", "16h", "24h", "48h", "week"] as const).map((mode) => (
-							<Button
-								key={mode}
-								onClick={() => handleRangeModeChange(mode)}
-								size="sm"
-								type="button"
-								variant={rangeMode === mode ? "default" : "ghost"}
+					<CardAction className="static col-auto row-auto w-full self-auto justify-self-auto sm:w-auto">
+						<ToggleGroup
+							className="range-scroll flex w-full overflow-x-auto rounded-md border border-slate-200 bg-white p-1 sm:w-auto"
+							onValueChange={(value) => {
+								if (isRangeMode(value)) handleRangeModeChange(value);
+							}}
+							size="sm"
+							type="single"
+							value={rangeMode}
+							variant="default"
+						>
+							{rangeModes.map((mode) => (
+								<ToggleGroupItem
+									key={mode}
+									value={mode}
+									className="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+								>
+									{mode === "week" ? "Week" : mode}
+								</ToggleGroupItem>
+							))}
+						</ToggleGroup>
+					</CardAction>
+				</CardHeader>
+				<CardContent className="px-3 pb-4 sm:px-5">
+					<div className="mb-3 flex flex-wrap gap-x-4 gap-y-2">
+						{legendItems.map((item) => (
+							<div
+								className="flex items-center gap-2 text-xs font-extrabold uppercase text-slate-600"
+								key={item.label}
 							>
-								{mode === "week" ? "Week" : mode}
-							</Button>
+								<span
+									className="size-2.5 rounded-full"
+									style={{ backgroundColor: item.color }}
+								/>
+								{item.label}
+							</div>
 						))}
 					</div>
-				</div>
-				<div className="mb-3 flex flex-wrap gap-x-4 gap-y-2">
-					{legendItems.map((item) => (
-						<div
-							className="flex items-center gap-2 text-xs font-extrabold uppercase text-slate-600"
-							key={item.label}
-						>
-							<span
-								className="size-2.5 rounded-full"
-								style={{ backgroundColor: item.color }}
-							/>
-							{item.label}
-						</div>
-					))}
-				</div>
-				<div className="h-[18rem] w-full sm:h-[22rem]">
-					<ResponsiveContainer height="100%" width="100%">
-						<LineChart
-							data={chartRows}
-							margin={{ top: 8, right: 18, bottom: 0, left: 0 }}
-							onMouseLeave={() => setActiveChartLineKey(null)}
-							onMouseMove={(nextState) => {
-								setActiveChartLineKey(
-									nextState.activeDataKey == null
-										? null
-										: String(nextState.activeDataKey),
-								);
-							}}
-						>
-							<CartesianGrid stroke="#d9e5de" vertical={false} />
-							<XAxis
-								dataKey="timestamp"
-								domain={["dataMin", "dataMax"]}
-								minTickGap={rangeMode === "week" ? 56 : 32}
-								scale="time"
-								stroke="#64746d"
-								tickFormatter={(value) =>
-									formatChartTick(Number(value), rangeMode)
-								}
-								tickLine={false}
-								ticks={xAxisTicks}
-								type="number"
-							/>
-							{midnightMarkers.map((marker) => (
-								<ReferenceLine
-									ifOverflow="extendDomain"
-									key={marker}
-									stroke="#aab9b1"
-									strokeDasharray="3 5"
-									strokeOpacity={0.7}
-									x={marker}
-								/>
-							))}
-							<YAxis
-								domain={[chartScale.min, chartScale.max]}
-								stroke="#64746d"
-								tickFormatter={(value) => `${value} C`}
-								tickLine={false}
-								ticks={chartScale.ticks}
-								width={54}
-							/>
-							<Tooltip
-								contentStyle={{
-									borderRadius: 8,
-									border: "1px solid #d7e2dc",
-									boxShadow: "0 12px 30px rgba(15, 23, 42, 0.12)",
+					<div className="h-[18rem] w-full sm:h-[22rem]">
+						<ResponsiveContainer height="100%" width="100%">
+							<LineChart
+								data={chartRows}
+								margin={{ top: 8, right: 18, bottom: 0, left: 0 }}
+								onMouseLeave={() => setActiveChartLineKey(null)}
+								onMouseMove={(nextState) => {
+									setActiveChartLineKey(
+										nextState.activeDataKey == null
+											? null
+											: String(nextState.activeDataKey),
+									);
 								}}
-								cursor={
-									<ChartCrosshairCursor
-										activeDataKey={activeChartLineKey}
-										yMax={chartScale.max}
-										yMin={chartScale.min}
+							>
+								<CartesianGrid stroke="#d9e5de" vertical={false} />
+								<XAxis
+									dataKey="timestamp"
+									domain={["dataMin", "dataMax"]}
+									minTickGap={rangeMode === "week" ? 56 : 32}
+									scale="time"
+									stroke="#64746d"
+									tickFormatter={(value) =>
+										formatChartTick(Number(value), rangeMode)
+									}
+									tickLine={false}
+									ticks={xAxisTicks}
+									type="number"
+								/>
+								{midnightMarkers.map((marker) => (
+									<ReferenceLine
+										ifOverflow="extendDomain"
+										key={marker}
+										stroke="#aab9b1"
+										strokeDasharray="3 5"
+										strokeOpacity={0.7}
+										x={marker}
 									/>
-								}
-								formatter={(value) => `${Number(value).toFixed(1)} C`}
-								labelFormatter={(value) => formatTime(new Date(value))}
-							/>
-							<Line
-								connectNulls
-								dataKey="outside"
-								dot={false}
-								name="Outside"
-								stroke={outsideColor}
-								strokeWidth={3}
-								type={mainChartCurveType}
-							/>
-							<Line
-								connectNulls
-								dataKey="outsideForecast"
-								dot={false}
-								name="2h forecast"
-								stroke={outsideForecastColor}
-								strokeDasharray="5 5"
-								strokeWidth={2.5}
-								type="monotone"
-							/>
-							{status.rooms.map((room, index) => (
+								))}
+								<YAxis
+									domain={[chartScale.min, chartScale.max]}
+									stroke="#64746d"
+									tickFormatter={(value) => `${value} C`}
+									tickLine={false}
+									ticks={chartScale.ticks}
+									width={54}
+								/>
+								<RechartsTooltip
+									contentStyle={{
+										borderRadius: 8,
+										border: "1px solid #d7e2dc",
+										boxShadow: "0 12px 30px rgba(15, 23, 42, 0.12)",
+									}}
+									cursor={
+										<ChartCrosshairCursor
+											activeDataKey={activeChartLineKey}
+											yMax={chartScale.max}
+											yMin={chartScale.min}
+										/>
+									}
+									formatter={(value) => `${Number(value).toFixed(1)} C`}
+									labelFormatter={(value) => formatTime(new Date(value))}
+								/>
 								<Line
 									connectNulls
-									dataKey={`room-${room.zoneId}`}
+									dataKey="outside"
 									dot={false}
-									key={room.zoneId}
-									name={room.zoneName}
-									stroke={roomColors[index % roomColors.length]}
-									strokeWidth={2.5}
+									name="Outside"
+									stroke={outsideColor}
+									strokeWidth={3}
 									type={mainChartCurveType}
 								/>
-							))}
-						</LineChart>
-					</ResponsiveContainer>
-				</div>
-				<div
-					aria-label="Measurement interval elapsed"
-					aria-valuemax={100}
-					aria-valuemin={0}
-					aria-valuenow={Math.round(measurementProgress)}
-					className="absolute inset-x-0 bottom-0 h-1 bg-slate-100"
-					role="progressbar"
-					title={`Next 10 minute sample window: ${Math.round(measurementProgress)}% elapsed`}
-				>
-					<div
-						className={`h-full transition-[width] duration-500 ease-out ${measurementProgressClass}`}
-						style={{ width: `${measurementProgress}%` }}
-					/>
-				</div>
-			</section>
+								<Line
+									connectNulls
+									dataKey="outsideForecast"
+									dot={false}
+									name="2h forecast"
+									stroke={outsideForecastColor}
+									strokeDasharray="5 5"
+									strokeWidth={2.5}
+									type="monotone"
+								/>
+								{status.rooms.map((room, index) => (
+									<Line
+										connectNulls
+										dataKey={`room-${room.zoneId}`}
+										dot={false}
+										key={room.zoneId}
+										name={room.zoneName}
+										stroke={roomColors[index % roomColors.length]}
+										strokeWidth={2.5}
+										type={mainChartCurveType}
+									/>
+								))}
+							</LineChart>
+						</ResponsiveContainer>
+					</div>
+				</CardContent>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<div
+							aria-label="Measurement interval elapsed"
+							aria-valuemax={100}
+							aria-valuemin={0}
+							aria-valuenow={Math.round(measurementProgress)}
+							className="absolute inset-x-0 bottom-0 h-1 bg-slate-100"
+							role="progressbar"
+						>
+							<div
+								className={`h-full transition-[width] duration-500 ease-out ${measurementProgressClass}`}
+								style={{ width: `${measurementProgress}%` }}
+							/>
+						</div>
+					</TooltipTrigger>
+					<TooltipContent>
+						Next 10 minute sample window: {Math.round(measurementProgress)}%
+						elapsed
+					</TooltipContent>
+				</Tooltip>
+			</Card>
 
-			<section className="mt-4 rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:mt-5 sm:p-5">
-				<div className="mb-4 flex items-center justify-between">
-					<h2 className="text-xl font-extrabold text-slate-950 sm:text-2xl">
+			<Card className="mt-4 gap-0 rounded-lg border-slate-200 bg-white py-0 shadow-sm sm:mt-5">
+				<CardHeader className="mb-4 flex flex-row items-center justify-between px-3 pt-3 pb-0 sm:px-5 sm:pt-5">
+					<CardTitle className="text-xl font-extrabold text-slate-950 sm:text-2xl">
 						Rooms
-					</h2>
-					<p className="text-sm font-medium text-slate-600">
+					</CardTitle>
+					<CardDescription className="text-sm font-medium text-slate-600">
 						{status.rooms.length} tado rooms
-					</p>
-				</div>
-				<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-					{status.rooms.map((room) => (
-						<RoomCard history={history} key={room.zoneId} room={room} />
-					))}
-				</div>
-			</section>
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="px-3 pb-3 sm:px-5 sm:pb-5">
+					<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+						{status.rooms.map((room) => (
+							<RoomCard history={history} key={room.zoneId} room={room} />
+						))}
+					</div>
+				</CardContent>
+			</Card>
 			<footer className="px-1 py-4 text-xs font-medium text-slate-500">
 				Auto-refreshes every minute · TanStack DB {historyCollection.id}
 			</footer>
@@ -649,17 +726,17 @@ function TadoReconnectPanel() {
 	}, [flow, pollMutation.isPending, pollMutation.mutate]);
 
 	return (
-		<div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-3">
-			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+		<Alert className="mt-3 border-amber-200 bg-amber-50 text-amber-950">
+			<div className="col-start-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<p className="text-sm font-extrabold text-amber-950">
+					<AlertTitle className="text-sm font-extrabold text-amber-950">
 						tado needs a local reconnect
-					</p>
-					<p className="mt-1 text-sm font-semibold text-amber-800">
+					</AlertTitle>
+					<AlertDescription className="mt-1 text-sm font-semibold text-amber-800">
 						{flow
 							? `Code ${flow.userCode} · expires ${formatTime(new Date(flow.expiresAt))}`
 							: "This only writes a token on your local dev server."}
-					</p>
+					</AlertDescription>
 					{message ? (
 						<p className="mt-1 text-xs font-semibold text-amber-700">
 							{message}
@@ -688,7 +765,7 @@ function TadoReconnectPanel() {
 					</Button>
 				</div>
 			</div>
-		</div>
+		</Alert>
 	);
 }
 
@@ -733,8 +810,8 @@ function RoomCard({
 	const trendClass = hourlyTrend?.direction || "steady";
 
 	return (
-		<article className={`room-card ${trendClass}`}>
-			<div className="px-4 pt-4">
+		<Card className={`room-card ${trendClass} gap-0 py-0 shadow-none`}>
+			<CardContent className="px-4 pt-4 pb-0">
 				<p className="text-xs font-extrabold uppercase text-slate-500">
 					{room.zoneName}
 				</p>
@@ -750,18 +827,16 @@ function RoomCard({
 					</p>
 					<HourlyTrendBadge trend={hourlyTrend} />
 				</div>
-			</div>
+			</CardContent>
 			<Sparkline points={sparklinePoints} />
-		</article>
+		</Card>
 	);
 }
 
 function HourlyTrendBadge({ trend }: { trend: RoomHourlyTrend | null }) {
 	if (!trend) {
 		return (
-			<span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-extrabold text-slate-500">
-				1h -
-			</span>
+			<Badge className="bg-slate-100 font-extrabold text-slate-500">1h -</Badge>
 		);
 	}
 
@@ -773,12 +848,16 @@ function HourlyTrendBadge({ trend }: { trend: RoomHourlyTrend | null }) {
 				: "bg-slate-100 text-slate-600";
 
 	return (
-		<span
-			className={`rounded-full px-2 py-1 text-xs font-extrabold ${trendClass}`}
-			title={`${formatDelta(trend.changeC)} over ${trend.hours.toFixed(1)}h`}
-		>
-			1h {formatDelta(trend.changeC)}
-		</span>
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<Badge className={`font-extrabold ${trendClass}`}>
+					1h {formatDelta(trend.changeC)}
+				</Badge>
+			</TooltipTrigger>
+			<TooltipContent>
+				{formatDelta(trend.changeC)} over {trend.hours.toFixed(1)}h
+			</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -822,7 +901,7 @@ function Sparkline({
 							))}
 						</linearGradient>
 					</defs>
-					<Tooltip
+					<RechartsTooltip
 						content={<SparklineTooltip />}
 						cursor={{ stroke: "#9aaba3", strokeWidth: 1 }}
 						isAnimationActive={false}
