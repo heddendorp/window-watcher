@@ -1,0 +1,49 @@
+name: Deploy Railway
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: railway-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: f584dbe5-aff5-4282-b423-0e7a874e9028
+      RAILWAY_SERVICE_ID: 42cf18f5-12d3-4e81-93f1-a15a9f2bc408
+      RAILWAY_ENVIRONMENT: production
+    steps:
+      - name: Check Railway token
+        if: ${{ env.RAILWAY_TOKEN == '' }}
+        run: |
+          echo "::notice::Set the RAILWAY_TOKEN repository secret to enable GitHub Actions deployments."
+
+      - name: Checkout
+        if: ${{ env.RAILWAY_TOKEN != '' }}
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        if: ${{ env.RAILWAY_TOKEN != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Railway CLI
+        if: ${{ env.RAILWAY_TOKEN != '' }}
+        run: npm install --global @railway/cli
+
+      - name: Deploy to Railway
+        if: ${{ env.RAILWAY_TOKEN != '' }}
+        run: |
+          railway up \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" \
+            --service "$RAILWAY_SERVICE_ID" \
+            --detach \
+            -m "github actions deploy $GITHUB_SHA"

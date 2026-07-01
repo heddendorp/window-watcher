@@ -131,6 +131,7 @@ Environment variables:
 - Production builds run `scripts/write-app-version.mjs` before `vite build`, generating ignored `public/app-version.json`. The client polls this file in production and reloads automatically when the version changes so installed PWA sessions pick up new deployments.
 - The Railway web service `Window watcher` is explicitly connected to GitHub source `heddendorp/window-watcher` on branch `main`; pushes to `main` should create a Railway deployment automatically. If it stops working, re-run `railway service source connect --repo heddendorp/window-watcher --branch main --service "Window watcher" --environment production --json`.
 - The Railway GitHub source connection was re-applied on 2026-07-01 after CLI-only deploys were not following `main` pushes.
+- `.github/workflows/deploy-railway.yml` is a GitHub Actions fallback for push-to-main deploys. It requires a repository secret named `RAILWAY_TOKEN` containing a Railway project token for the production environment; without that secret the workflow skips deployment with a notice.
 
 ## Known Gotchas
 
@@ -139,6 +140,7 @@ Environment variables:
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.
 - The Railway sampler service is separate from the web service. It uses the `curlimages/curl` image plus a ten-minute cron to call `POST /api/sample`; do not connect that sampler service to the GitHub repo.
+- Use the web service ID `42cf18f5-12d3-4e81-93f1-a15a9f2bc408` and project ID `f584dbe5-aff5-4282-b423-0e7a874e9028` for CI deploys. Do not put Railway tokens in the repository; keep them only in GitHub/Railway secret storage.
 - Railway cron exists, but its documented minimum frequency is five minutes. Keep the app as an always-on web service so the dashboard remains available; Railway production sampling is configured at ten minutes.
 - Railway's "Login with Railway" is for authenticating Railway users/resources, not for locking this dashboard to one Google account. Clerk is the chosen app auth provider; configure Google sign-in in Clerk and set the Clerk variables on Railway.
 - The public GitHub repository must never include `.env`, `.tado-token.json`, `data/temperature-history.jsonl`, Clerk secrets, tado tokens, or Railway tokens.
