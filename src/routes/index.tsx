@@ -3,7 +3,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useState } from "react";
 import {
+	Area,
 	CartesianGrid,
+	ComposedChart,
 	Line,
 	LineChart,
 	Tooltip as RechartsTooltip,
@@ -48,14 +50,14 @@ export const Route = createFileRoute("/")({ component: App });
 const rangeModes = ["4h", "16h", "24h", "48h", "week"] as const;
 type RangeMode = (typeof rangeModes)[number];
 
-const roomColors = ["#0f8b5f", "#b03a2e", "#a56b00", "#6750a4", "#b35c14"];
-const outsideColor = "#1f789d";
-const outsideForecastColor = "#8bbbd0";
+const roomColors = ["#ff7a59", "#9c8cff", "#ffb454", "#4cc9f0", "#ff6fa0"];
+const outsideColor = "#2dd4bf";
+const outsideForecastColor = "#f2b953";
 const mainChartCurveType = "basis";
 const sparklineCurveType = mainChartCurveType;
-const sparklineRiseColor = "#d23f36";
-const sparklineFallColor = "#0b8a61";
-const sparklineFlatColor = "#6f7c75";
+const sparklineRiseColor = "#ff8b5e";
+const sparklineFallColor = "#2dd4bf";
+const sparklineFlatColor = "#8aa39c";
 const measurementIntervalMs = 10 * 60 * 1000;
 const measurementProgressRecalculationMs = 5 * 1000;
 const appVersionCheckIntervalMs = 60 * 1000;
@@ -81,7 +83,7 @@ function AuthenticatedApp() {
 
 	if (!isLoaded) {
 		return (
-			<main className="mx-auto flex min-h-screen max-w-7xl items-center px-5">
+			<main className="mx-auto flex min-h-screen max-w-6xl items-center px-4 sm:px-6">
 				<LoadingPanel />
 			</main>
 		);
@@ -101,7 +103,7 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 
 	if (dashboard.isLoading) {
 		return (
-			<main className="mx-auto flex min-h-screen max-w-7xl items-center px-5">
+			<main className="mx-auto flex min-h-screen max-w-6xl items-center px-4 sm:px-6">
 				<LoadingPanel />
 			</main>
 		);
@@ -117,13 +119,13 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 
 	if (dashboard.isError || !dashboard.data) {
 		return (
-			<main className="mx-auto flex min-h-screen max-w-7xl items-center px-5">
-				<Card className="border-red-200">
+			<main className="mx-auto flex min-h-screen max-w-6xl items-center px-4 sm:px-6">
+				<Card className="glass-panel w-full max-w-xl gap-2 border-[var(--ww-hairline)] py-6">
 					<CardHeader>
-						<CardTitle className="text-2xl font-bold text-slate-950">
+						<CardTitle className="font-display text-2xl font-medium text-[var(--ww-ember)]">
 							Window Watcher
 						</CardTitle>
-						<CardDescription className="text-red-700">
+						<CardDescription className="text-[var(--ww-ink-soft)]">
 							{dashboard.error instanceof Error
 								? dashboard.error.message
 								: "Could not load temperatures."}
@@ -146,14 +148,14 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 
 function LoadingPanel() {
 	return (
-		<Card className="w-full max-w-xl">
+		<Card className="glass-panel w-full max-w-xl gap-3 border-[var(--ww-hairline)] py-6">
 			<CardHeader>
-				<Skeleton className="h-8 w-56" />
-				<Skeleton className="h-5 w-80 max-w-full" />
+				<Skeleton className="h-3 w-32 rounded-full" />
+				<Skeleton className="h-9 w-64 max-w-full rounded-lg" />
 			</CardHeader>
 			<CardContent className="grid gap-3">
-				<Skeleton className="h-16 w-full" />
-				<Skeleton className="h-10 w-2/3" />
+				<Skeleton className="h-3.5 w-full rounded-full" />
+				<Skeleton className="h-24 w-full rounded-xl" />
 			</CardContent>
 		</Card>
 	);
@@ -165,20 +167,23 @@ function isRangeMode(value: string): value is RangeMode {
 
 function AuthGate() {
 	return (
-		<main className="mx-auto flex min-h-screen max-w-2xl items-center px-5 text-slate-900">
-			<Card>
+		<main className="relative mx-auto flex min-h-screen max-w-2xl items-center px-4 text-[var(--ww-ink)] sm:px-6">
+			<Card className="glass-panel w-full gap-4 border-[var(--ww-hairline)] py-8">
 				<CardHeader>
-					<CardTitle className="text-2xl font-extrabold text-slate-950">
-						Window Watcher
+					<span className="kicker">Window Watcher</span>
+					<CardTitle className="font-display mt-2 text-3xl font-medium text-[var(--ww-ink)]">
+						A private read on your rooms.
 					</CardTitle>
-					<CardDescription className="font-medium leading-6">
-						Sign in with the authorized Google account to view the flat
-						temperatures and recommendations.
+					<CardDescription className="mt-1 text-base leading-6 font-medium text-[var(--ww-ink-soft)]">
+						Sign in with the authorized Google account to view live temperatures
+						and window recommendations.
 					</CardDescription>
 				</CardHeader>
 				<CardContent>
 					<SignInButton mode="modal">
-						<Button type="button">Sign in with Google</Button>
+						<Button size="lg" type="button">
+							Sign in with Google
+						</Button>
 					</SignInButton>
 				</CardContent>
 			</Card>
@@ -326,104 +331,124 @@ function Dashboard({
 	};
 
 	return (
-		<main className="mx-auto min-h-screen max-w-7xl px-3 py-3 text-slate-900 sm:px-5 sm:py-5">
-			<Card className={`main-card ${status.verdict.action} gap-0 py-0`}>
-				<div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-					<div className="min-w-0">
-						<div className="flex flex-wrap items-center gap-3">
-							<h1 className="text-2xl font-extrabold tracking-normal text-slate-950 sm:text-3xl">
-								Window Watcher
-							</h1>
-							{authEnabled ? <UserButton /> : null}
-						</div>
-						<div className="mt-1 flex max-w-4xl flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium leading-6 text-slate-600">
-							<span>
-								{status.location.label} · updated {formatTime(latestAt)}
-							</span>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Badge
-										className={`font-extrabold uppercase leading-5 ${measurementAgeClass}`}
-										variant="outline"
-									>
-										{status.stale ? "stale" : "measured"} {measurementAge.label}
-									</Badge>
-								</TooltipTrigger>
-								<TooltipContent>
-									Last measurement: {formatTime(measurementAt)}
-								</TooltipContent>
-							</Tooltip>
-						</div>
-					</div>
-					<div className="text-left sm:text-right">
-						<p className="text-sm font-semibold uppercase text-slate-500">
-							Outside
-						</p>
-						<p className="text-3xl font-extrabold text-slate-950 sm:text-4xl">
-							{formatTemp(status.outside.temperatureC)}
-						</p>
-					</div>
-				</div>
-
-				<div className="mt-5 grid gap-4 lg:grid-cols-[1fr_18rem]">
-					<div>
-						<div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-							<h2 className="text-xl font-extrabold text-slate-950 sm:text-2xl">
-								{status.verdict.title}
-							</h2>
-							<p className="text-base font-medium text-slate-700">
-								{status.verdict.detail}
+		<main className="mx-auto min-h-screen max-w-6xl px-3 py-4 text-[var(--ww-ink)] sm:px-6 sm:py-8">
+			<section
+				className={`hero-card ${status.verdict.action} motion-safe:fill-mode-both motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:duration-700`}
+			>
+				<div aria-hidden="true" className="aurora-layer" />
+				<div className="hero-content flex flex-col gap-6">
+					<div className="flex flex-wrap items-start justify-between gap-4">
+						<div className="min-w-0">
+							<div className="flex flex-wrap items-center gap-2.5">
+								<span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--ww-hairline)] bg-[var(--ww-panel-glass)] px-3 py-1.5 text-[0.68rem] font-extrabold tracking-[0.14em] text-[var(--ww-ink-faint)] uppercase">
+									<span className="size-1.5 rounded-full bg-[var(--verdict-color)]" />
+									Window Watcher
+								</span>
+								{authEnabled ? <UserButton /> : null}
+							</div>
+							<p className="mt-2.5 flex max-w-4xl flex-wrap items-center gap-x-2 gap-y-1 text-sm font-semibold text-[var(--ww-ink-soft)]">
+								<span>{status.location.label}</span>
+								<span aria-hidden="true" className="text-[var(--ww-ink-faint)]">
+									·
+								</span>
+								<span>updated {formatTime(latestAt)}</span>
 							</p>
 						</div>
-						{status.stale ? (
-							<Alert className="mt-2 border-amber-200 bg-amber-50 text-amber-900">
-								<AlertTitle>Fresh readings delayed</AlertTitle>
-								<AlertDescription className="font-semibold text-amber-800">
-									{formatStaleReason(status.staleReason)}
-								</AlertDescription>
-							</Alert>
-						) : null}
-						{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
-							<TadoReconnectPanel />
-						) : null}
-						{status.recommendation.forecast?.summary ? (
-							<p className="mt-2 text-sm font-semibold text-slate-700">
-								{status.recommendation.forecast.summary}
+						<div className="text-right">
+							<p className="kicker">Outside</p>
+							<p className="mono-num text-4xl font-semibold text-[var(--ww-ink)] sm:text-5xl">
+								{formatTemp(status.outside.temperatureC)}
 							</p>
-						) : null}
+						</div>
 					</div>
-					<Card className="gap-1 rounded-md border-slate-200 bg-slate-50 px-3 py-2 shadow-none">
-						<CardTitle className="text-xs font-bold uppercase text-slate-500">
-							Outdoor trend
-						</CardTitle>
-						<CardDescription className="text-sm font-semibold text-slate-800">
-							{status.recommendation.outdoorTrend.direction} ·{" "}
-							{formatDelta(status.recommendation.outdoorTrend.changeC)} over{" "}
-							{status.recommendation.outdoorTrend.hours.toFixed(1)}h
-						</CardDescription>
-						<p className="text-xs text-slate-600">
-							Threshold {formatTemp(status.recommendation.thresholdC)}
-							{status.recommendation.forecast?.minTemperatureC == null
-								? ""
-								: ` · next ${status.recommendation.forecast.horizonHours.toFixed(0)}h low ${formatTemp(status.recommendation.forecast.minTemperatureC)}`}
-						</p>
-					</Card>
-				</div>
-			</Card>
 
-			<Card className="relative mt-4 gap-0 overflow-hidden rounded-lg border-slate-200 bg-white py-0 shadow-sm sm:mt-5">
-				<CardHeader className="mb-4 flex flex-wrap items-center justify-between gap-3 px-3 pt-3 pb-0 sm:flex-row sm:px-5 sm:pt-5">
 					<div>
-						<CardTitle className="text-xl font-extrabold text-slate-950 sm:text-2xl">
+						<h1 className="verdict-title font-display text-[1.85rem] leading-[1.1] font-medium sm:text-[2.5rem]">
+							{status.verdict.title}
+						</h1>
+						<p className="mt-2 max-w-2xl text-base font-medium text-[var(--ww-ink-soft)]">
+							{status.verdict.detail}
+						</p>
+					</div>
+
+					<ThermalGauge
+						forecastMinC={
+							status.recommendation.forecast?.minTemperatureC ?? null
+						}
+						outsideC={status.outside.temperatureC}
+						thresholdC={status.recommendation.thresholdC}
+					/>
+
+					<div className="flex flex-wrap items-stretch gap-2.5">
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Badge
+									className={`h-auto rounded-full border px-3 py-1.5 font-bold tracking-wide uppercase ${measurementAgeClass}`}
+									variant="outline"
+								>
+									{status.stale ? "stale" : "measured"} {measurementAge.label}
+								</Badge>
+							</TooltipTrigger>
+							<TooltipContent>
+								Last measurement: {formatTime(measurementAt)}
+							</TooltipContent>
+						</Tooltip>
+						<div className="stat-chip">
+							<p className="kicker">Outdoor trend</p>
+							<p className="mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
+								{status.recommendation.outdoorTrend.direction} ·{" "}
+								{formatDelta(status.recommendation.outdoorTrend.changeC)} over{" "}
+								{status.recommendation.outdoorTrend.hours.toFixed(1)}h
+							</p>
+						</div>
+						{status.recommendation.forecast?.minTemperatureC == null ? null : (
+							<div className="stat-chip">
+								<p className="kicker">
+									Next {status.recommendation.forecast.horizonHours.toFixed(0)}h
+									low
+								</p>
+								<p className="mono-num mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
+									{formatTemp(status.recommendation.forecast.minTemperatureC)}
+								</p>
+							</div>
+						)}
+					</div>
+
+					{status.recommendation.forecast?.summary ? (
+						<p className="-mt-3 text-sm font-semibold text-[var(--ww-ink-soft)]">
+							{status.recommendation.forecast.summary}
+						</p>
+					) : null}
+
+					{status.stale ? (
+						<Alert className="border-[var(--ww-hairline)] bg-[var(--ww-gold-soft)]">
+							<AlertTitle className="text-[var(--ww-ink)]">
+								Fresh readings delayed
+							</AlertTitle>
+							<AlertDescription className="font-semibold text-[var(--ww-ink-soft)]">
+								{formatStaleReason(status.staleReason)}
+							</AlertDescription>
+						</Alert>
+					) : null}
+					{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
+						<TadoReconnectPanel />
+					) : null}
+				</div>
+			</section>
+
+			<Card className="glass-panel motion-safe:fill-mode-both mt-5 gap-0 overflow-hidden border-[var(--ww-hairline)] bg-transparent py-0 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:delay-100 motion-safe:duration-700">
+				<CardHeader className="mb-2 flex flex-wrap items-center justify-between gap-3 px-4 pt-5 pb-0 sm:flex-row sm:px-6">
+					<div>
+						<CardTitle className="font-display text-xl font-medium text-[var(--ww-ink)] sm:text-2xl">
 							Temperature Trends
 						</CardTitle>
-						<CardDescription className="mt-1 text-sm font-medium text-slate-600">
+						<CardDescription className="mt-1 text-sm font-medium text-[var(--ww-ink-soft)]">
 							{rangeMode} · {filteredHistory.length} saved measurements
 						</CardDescription>
 					</div>
 					<CardAction className="static col-auto row-auto w-full self-auto justify-self-auto sm:w-auto">
 						<ToggleGroup
-							className="range-scroll flex w-full overflow-x-auto rounded-md border border-slate-200 bg-white p-1 sm:w-auto"
+							className="range-scroll flex w-full overflow-x-auto rounded-full border border-[var(--ww-hairline)] bg-[var(--ww-panel-glass)] p-1 sm:w-auto"
 							onValueChange={(value) => {
 								if (isRangeMode(value)) handleRangeModeChange(value);
 							}}
@@ -436,7 +461,7 @@ function Dashboard({
 								<ToggleGroupItem
 									key={mode}
 									value={mode}
-									className="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+									className="rounded-full data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:shadow-none"
 								>
 									{mode === "week" ? "Week" : mode}
 								</ToggleGroupItem>
@@ -444,11 +469,11 @@ function Dashboard({
 						</ToggleGroup>
 					</CardAction>
 				</CardHeader>
-				<CardContent className="px-3 pb-4 sm:px-5">
-					<div className="mb-3 flex flex-wrap gap-x-4 gap-y-2">
+				<CardContent className="px-4 pb-5 sm:px-6">
+					<div className="mb-4 flex flex-wrap gap-x-4 gap-y-2">
 						{legendItems.map((item) => (
 							<div
-								className="flex items-center gap-2 text-xs font-extrabold uppercase text-slate-600"
+								className="flex items-center gap-2 text-xs font-bold tracking-wide text-[var(--ww-ink-soft)] uppercase"
 								key={item.label}
 							>
 								<span
@@ -461,9 +486,9 @@ function Dashboard({
 					</div>
 					<div className="h-[18rem] w-full sm:h-[22rem]">
 						<ResponsiveContainer height="100%" width="100%">
-							<LineChart
+							<ComposedChart
 								data={chartRows}
-								margin={{ top: 8, right: 18, bottom: 0, left: 0 }}
+								margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
 								onMouseLeave={() => setActiveChartLineKey(null)}
 								onMouseMove={(nextState) => {
 									setActiveChartLineKey(
@@ -473,13 +498,31 @@ function Dashboard({
 									);
 								}}
 							>
-								<CartesianGrid stroke="#d9e5de" vertical={false} />
+								<defs>
+									<linearGradient id="outside-glow" x1="0" x2="0" y1="0" y2="1">
+										<stop
+											offset="0%"
+											stopColor={outsideColor}
+											stopOpacity={0.32}
+										/>
+										<stop
+											offset="100%"
+											stopColor={outsideColor}
+											stopOpacity={0}
+										/>
+									</linearGradient>
+								</defs>
+								<CartesianGrid stroke="var(--ww-hairline)" vertical={false} />
 								<XAxis
 									dataKey="timestamp"
 									domain={["dataMin", "dataMax"]}
 									minTickGap={rangeMode === "week" ? 56 : 32}
 									scale="time"
-									stroke="#64746d"
+									tick={{
+										fill: "var(--ww-ink-faint)",
+										fontSize: 11,
+										fontFamily: "var(--font-mono)",
+									}}
 									tickFormatter={(value) =>
 										formatChartTick(Number(value), rangeMode)
 									}
@@ -491,26 +534,25 @@ function Dashboard({
 									<ReferenceLine
 										ifOverflow="extendDomain"
 										key={marker}
-										stroke="#aab9b1"
+										stroke="var(--ww-hairline-strong)"
 										strokeDasharray="3 5"
-										strokeOpacity={0.7}
 										x={marker}
 									/>
 								))}
 								<YAxis
 									domain={[chartScale.min, chartScale.max]}
-									stroke="#64746d"
-									tickFormatter={(value) => `${value} C`}
+									tick={{
+										fill: "var(--ww-ink-faint)",
+										fontSize: 11,
+										fontFamily: "var(--font-mono)",
+									}}
+									tickFormatter={(value) => `${value}°`}
 									tickLine={false}
 									ticks={chartScale.ticks}
-									width={54}
+									width={40}
 								/>
 								<RechartsTooltip
-									contentStyle={{
-										borderRadius: 8,
-										border: "1px solid #d7e2dc",
-										boxShadow: "0 12px 30px rgba(15, 23, 42, 0.12)",
-									}}
+									content={<ChartTooltip />}
 									cursor={
 										<ChartCrosshairCursor
 											activeDataKey={activeChartLineKey}
@@ -518,8 +560,15 @@ function Dashboard({
 											yMin={chartScale.min}
 										/>
 									}
-									formatter={(value) => `${Number(value).toFixed(1)} C`}
-									labelFormatter={(value) => formatTime(new Date(value))}
+								/>
+								<Area
+									connectNulls
+									dataKey="outside"
+									dot={false}
+									fill="url(#outside-glow)"
+									isAnimationActive={false}
+									stroke="none"
+									type={mainChartCurveType}
 								/>
 								<Line
 									connectNulls
@@ -527,7 +576,7 @@ function Dashboard({
 									dot={false}
 									name="Outside"
 									stroke={outsideColor}
-									strokeWidth={3}
+									strokeWidth={2.75}
 									type={mainChartCurveType}
 								/>
 								<Line
@@ -537,7 +586,7 @@ function Dashboard({
 									name="2h forecast"
 									stroke={outsideForecastColor}
 									strokeDasharray="5 5"
-									strokeWidth={2.5}
+									strokeWidth={2.25}
 									type="monotone"
 								/>
 								{status.rooms.map((room, index) => (
@@ -548,11 +597,11 @@ function Dashboard({
 										key={room.zoneId}
 										name={room.zoneName}
 										stroke={roomColors[index % roomColors.length]}
-										strokeWidth={2.5}
+										strokeWidth={2.25}
 										type={mainChartCurveType}
 									/>
 								))}
-							</LineChart>
+							</ComposedChart>
 						</ResponsiveContainer>
 					</div>
 				</CardContent>
@@ -563,7 +612,7 @@ function Dashboard({
 							aria-valuemax={100}
 							aria-valuemin={0}
 							aria-valuenow={Math.round(measurementProgress)}
-							className="absolute inset-x-0 bottom-0 h-1 bg-slate-100"
+							className="absolute inset-x-0 bottom-0 h-1 bg-[var(--ww-hairline)]"
 							role="progressbar"
 						>
 							<div
@@ -579,16 +628,16 @@ function Dashboard({
 				</Tooltip>
 			</Card>
 
-			<Card className="mt-4 gap-0 rounded-lg border-slate-200 bg-white py-0 shadow-sm sm:mt-5">
-				<CardHeader className="mb-4 flex flex-row items-center justify-between px-3 pt-3 pb-0 sm:px-5 sm:pt-5">
-					<CardTitle className="text-xl font-extrabold text-slate-950 sm:text-2xl">
+			<Card className="glass-panel motion-safe:fill-mode-both mt-5 gap-0 border-[var(--ww-hairline)] bg-transparent py-0 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-3 motion-safe:delay-150 motion-safe:duration-700">
+				<CardHeader className="mb-2 flex flex-row items-center justify-between px-4 pt-5 pb-0 sm:px-6">
+					<CardTitle className="font-display text-xl font-medium text-[var(--ww-ink)] sm:text-2xl">
 						Rooms
 					</CardTitle>
-					<CardDescription className="text-sm font-medium text-slate-600">
+					<CardDescription className="text-sm font-medium text-[var(--ww-ink-soft)]">
 						{status.rooms.length} tado rooms
 					</CardDescription>
 				</CardHeader>
-				<CardContent className="px-3 pb-3 sm:px-5 sm:pb-5">
+				<CardContent className="px-4 pb-5 sm:px-6">
 					<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
 						{status.rooms.map((room) => (
 							<RoomCard history={history} key={room.zoneId} room={room} />
@@ -596,10 +645,121 @@ function Dashboard({
 					</div>
 				</CardContent>
 			</Card>
-			<footer className="px-1 py-4 text-xs font-medium text-slate-500">
-				Auto-refreshes every minute · TanStack DB {historyCollection.id}
+			<footer className="flex flex-wrap items-center justify-between gap-2 px-1 py-6 text-xs font-semibold text-[var(--ww-ink-faint)]">
+				<span>Auto-refreshes every minute</span>
+				<span className="mono-num">TanStack DB {historyCollection.id}</span>
 			</footer>
 		</main>
+	);
+}
+
+function ThermalGauge({
+	forecastMinC,
+	outsideC,
+	thresholdC,
+}: {
+	forecastMinC: number | null;
+	outsideC: number;
+	thresholdC: number;
+}) {
+	const knownValues = [outsideC, thresholdC];
+	if (forecastMinC != null) knownValues.push(forecastMinC);
+
+	const rawMin = Math.min(...knownValues);
+	const rawMax = Math.max(...knownValues);
+	const padding = Math.max(1.4, (rawMax - rawMin) * 0.4);
+	const scaleMin = rawMin - padding;
+	const scaleMax = rawMax + padding;
+	const toPercent = (value: number) =>
+		Math.min(
+			100,
+			Math.max(0, ((value - scaleMin) / (scaleMax - scaleMin)) * 100),
+		);
+
+	return (
+		<div>
+			<div className="thermal-gauge">
+				<div
+					className="thermal-gauge__tick"
+					style={{ left: `${toPercent(thresholdC)}%` }}
+				/>
+				{forecastMinC == null ? null : (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<div
+								className="thermal-gauge__ghost"
+								style={{ left: `${toPercent(forecastMinC)}%` }}
+							/>
+						</TooltipTrigger>
+						<TooltipContent>
+							Forecast low {formatTemp(forecastMinC)}
+						</TooltipContent>
+					</Tooltip>
+				)}
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<div
+							className="thermal-gauge__marker"
+							style={{ left: `${toPercent(outsideC)}%` }}
+						/>
+					</TooltipTrigger>
+					<TooltipContent>Outside now {formatTemp(outsideC)}</TooltipContent>
+				</Tooltip>
+			</div>
+			<div className="mt-2 flex items-center justify-between text-[0.68rem] font-bold tracking-[0.1em] text-[var(--ww-ink-faint)] uppercase">
+				<span>Cooler</span>
+				<span className="mono-num normal-case">
+					threshold {formatTemp(thresholdC)}
+				</span>
+				<span>Warmer</span>
+			</div>
+		</div>
+	);
+}
+
+function ChartTooltip({
+	active,
+	label,
+	payload,
+}: {
+	active?: boolean;
+	label?: number | string;
+	payload?: Array<{
+		color?: string;
+		dataKey?: string | number;
+		name?: string;
+		value?: unknown;
+	}>;
+}) {
+	const rows = (payload || []).filter(
+		(item): item is typeof item & { value: number } =>
+			typeof item.value === "number",
+	);
+	if (!active || !rows.length) return null;
+
+	return (
+		<div className="glass-panel min-w-40 border-[var(--ww-hairline-strong)] px-3 py-2.5 text-xs">
+			<p className="kicker mb-1.5">{formatTime(new Date(Number(label)))}</p>
+			<div className="flex flex-col gap-1">
+				{rows.map((row) => (
+					<div
+						className="flex items-center justify-between gap-4"
+						key={String(row.dataKey)}
+					>
+						<span className="flex items-center gap-1.5 font-semibold text-[var(--ww-ink-soft)]">
+							<span
+								className="size-1.5 rounded-full"
+								style={{ backgroundColor: row.color }}
+							/>
+							{row.name}
+						</span>
+						<span className="mono-num font-semibold text-[var(--ww-ink)]">
+							{row.value.toFixed(1)}°
+						</span>
+					</div>
+				))}
+			</div>
+		</div>
 	);
 }
 
@@ -645,7 +805,7 @@ function ChartCrosshairCursor({
 		value == null
 			? null
 			: chartTop + ((yMax - value) / (yMax - yMin)) * chartHeight;
-	const stroke = "#7f9188";
+	const stroke = "var(--ww-ink-faint)";
 
 	return (
 		<g className="recharts-tooltip-cursor" pointerEvents="none">
@@ -726,19 +886,19 @@ function TadoReconnectPanel() {
 	}, [flow, pollMutation.isPending, pollMutation.mutate]);
 
 	return (
-		<Alert className="mt-3 border-amber-200 bg-amber-50 text-amber-950">
+		<Alert className="mt-1 border-[var(--ww-hairline)] bg-[var(--ww-gold-soft)]">
 			<div className="col-start-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<AlertTitle className="text-sm font-extrabold text-amber-950">
+					<AlertTitle className="text-sm font-extrabold text-[var(--ww-ink)]">
 						tado needs a local reconnect
 					</AlertTitle>
-					<AlertDescription className="mt-1 text-sm font-semibold text-amber-800">
+					<AlertDescription className="mt-1 text-sm font-semibold text-[var(--ww-ink-soft)]">
 						{flow
 							? `Code ${flow.userCode} · expires ${formatTime(new Date(flow.expiresAt))}`
 							: "This only writes a token on your local dev server."}
 					</AlertDescription>
 					{message ? (
-						<p className="mt-1 text-xs font-semibold text-amber-700">
+						<p className="mt-1 text-xs font-semibold text-[var(--ww-ink-faint)]">
 							{message}
 						</p>
 					) : null}
@@ -810,23 +970,23 @@ function RoomCard({
 	const trendClass = hourlyTrend?.direction || "steady";
 
 	return (
-		<Card className={`room-card ${trendClass} gap-0 py-0 shadow-none`}>
-			<CardContent className="px-4 pt-4 pb-0">
-				<p className="text-xs font-extrabold uppercase text-slate-500">
-					{room.zoneName}
-				</p>
-				<div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-					<p className="text-3xl font-extrabold text-slate-950 sm:text-4xl">
+		<Card
+			className={`room-tile ${trendClass} gap-0 border-none py-0 shadow-none`}
+		>
+			<CardContent className="px-4 pt-5 pb-0">
+				<p className="kicker">{room.zoneName}</p>
+				<div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+					<p className="mono-num text-3xl font-semibold text-[var(--ww-ink)] sm:text-4xl">
 						{formatTemp(room.temperatureC)}
-					</p>
-					<p className="text-sm font-semibold text-slate-600">
-						{room.verdict.title} · {formatDelta(room.differenceC)} vs outside
-						{room.humidityPercent == null
-							? ""
-							: ` · ${room.humidityPercent.toFixed(0)}% humidity`}
 					</p>
 					<HourlyTrendBadge trend={hourlyTrend} />
 				</div>
+				<p className="mt-1 text-sm font-semibold text-[var(--ww-ink-soft)]">
+					{room.verdict.title} · {formatDelta(room.differenceC)} vs outside
+					{room.humidityPercent == null
+						? ""
+						: ` · ${room.humidityPercent.toFixed(0)}% humidity`}
+				</p>
 			</CardContent>
 			<Sparkline points={sparklinePoints} />
 		</Card>
@@ -836,21 +996,25 @@ function RoomCard({
 function HourlyTrendBadge({ trend }: { trend: RoomHourlyTrend | null }) {
 	if (!trend) {
 		return (
-			<Badge className="bg-slate-100 font-extrabold text-slate-500">1h -</Badge>
+			<Badge className="rounded-full border-none bg-[var(--muted)] font-extrabold text-[var(--ww-ink-faint)]">
+				1h -
+			</Badge>
 		);
 	}
 
 	const trendClass =
 		trend.direction === "rising"
-			? "bg-red-50 text-red-700"
+			? "bg-[var(--ww-ember-soft)] text-[var(--ww-ember)]"
 			: trend.direction === "falling"
-				? "bg-emerald-50 text-emerald-700"
-				: "bg-slate-100 text-slate-600";
+				? "bg-[var(--ww-breeze-soft)] text-[var(--ww-breeze)]"
+				: "bg-[var(--muted)] text-[var(--ww-ink-soft)]";
 
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<Badge className={`font-extrabold ${trendClass}`}>
+				<Badge
+					className={`rounded-full border-none font-extrabold ${trendClass}`}
+				>
 					1h {formatDelta(trend.changeC)}
 				</Badge>
 			</TooltipTrigger>
@@ -868,7 +1032,7 @@ function Sparkline({
 }) {
 	const gradientId = `sparkline-${useId().replaceAll(/[^a-zA-Z0-9_-]/g, "")}`;
 
-	if (points.length < 2) return <div className="h-16" />;
+	if (points.length < 2) return <div className="h-14" />;
 
 	const min = Math.min(...points.map((point) => point.value));
 	const max = Math.max(...points.map((point) => point.value));
@@ -877,7 +1041,7 @@ function Sparkline({
 	const gradientStops = buildSparklineGradientStops(points);
 
 	return (
-		<div className="mt-2 h-16 w-full">
+		<div className="mt-1 h-14 w-full">
 			<ResponsiveContainer height="100%" width="100%">
 				<LineChart
 					data={points}
@@ -903,14 +1067,14 @@ function Sparkline({
 					</defs>
 					<RechartsTooltip
 						content={<SparklineTooltip />}
-						cursor={{ stroke: "#9aaba3", strokeWidth: 1 }}
+						cursor={{ stroke: "var(--ww-ink-faint)", strokeWidth: 1 }}
 						isAnimationActive={false}
 					/>
 					<Line
 						activeDot={{
-							fill: "#ffffff",
+							fill: "var(--ww-panel)",
 							r: 3,
-							stroke: "#17221f",
+							stroke: "var(--ww-ink)",
 							strokeWidth: 2,
 						}}
 						dataKey="value"
@@ -947,7 +1111,7 @@ function SparklineTooltip({
 	if (!active || !point) return null;
 
 	return (
-		<div className="rounded-md border border-slate-200 bg-white/95 px-2 py-1 text-xs font-bold text-slate-700 shadow-sm">
+		<div className="glass-panel mono-num border-[var(--ww-hairline-strong)] px-2 py-1 text-xs font-bold text-[var(--ww-ink)]">
 			{formatTemp(point.value)} · {formatTime(new Date(point.time))}
 		</div>
 	);
@@ -1318,12 +1482,12 @@ function formatMeasurementAge(measuredAt: Date, generatedAt: Date) {
 
 function getMeasurementAgeClass(minutes: number, stale?: boolean) {
 	if (stale || minutes >= 30) {
-		return "border-red-200 bg-red-50 text-red-700";
+		return "border-transparent bg-[var(--ww-ember-soft)] text-[var(--ww-ember)]";
 	}
 	if (minutes >= 15) {
-		return "border-amber-200 bg-amber-50 text-amber-800";
+		return "border-transparent bg-[var(--ww-gold-soft)] text-[var(--ww-gold)]";
 	}
-	return "border-emerald-200 bg-emerald-50 text-emerald-700";
+	return "border-transparent bg-[var(--ww-breeze-soft)] text-[var(--ww-breeze)]";
 }
 
 function getMeasurementProgress(measuredAt: Date, generatedAt: Date) {
@@ -1333,9 +1497,9 @@ function getMeasurementProgress(measuredAt: Date, generatedAt: Date) {
 }
 
 function getMeasurementProgressClass(minutes: number, stale?: boolean) {
-	if (stale || minutes >= 30) return "bg-red-500";
-	if (minutes >= 15) return "bg-amber-500";
-	return "bg-emerald-500";
+	if (stale || minutes >= 30) return "bg-[var(--ww-ember)]";
+	if (minutes >= 15) return "bg-[var(--ww-gold)]";
+	return "bg-[var(--ww-breeze)]";
 }
 
 function formatTime(date: Date) {

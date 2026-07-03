@@ -80,6 +80,19 @@ Before editing files for a substantial task:
 - Railway represented by `nixpacks.toml`
 - shadcn UI components are generated in `src/components/ui`; prefer them for controls before adding custom UI primitives
 
+## Design System
+
+The dashboard was redesigned on 2026-07-03 around an "instrument panel for air" concept: the app reads like a precision weather/climate instrument with a warm, editorial voice for the verdict.
+
+- Fonts: `Fraunces` (variable serif, class `font-display`/`font-serif`) for the app wordmark, verdict headline, and card titles; `Manrope` (`font-sans`, default body) for UI text; `IBM Plex Mono` (`font-mono`, helper class `mono-num`) for temperature readouts, timestamps, and other tabular data. All three are loaded via the Google Fonts `@import` at the top of `src/styles.css`.
+- Color tokens live in `src/styles.css` as `--ww-*` custom properties, defined separately under `:root` (light — cool mist paper, not warm cream) and `.dark` (atmospheric teal-black ink, not flat near-black). The shadcn/ui variables (`--background`, `--primary`, `--border`, etc.) are mapped onto these tokens so existing primitives in `src/components/ui/*` automatically follow the theme. `--primary` is the teal "breeze" accent, so default buttons and the active range-toggle pill are teal by design.
+- Verdict theming: the hero `.hero-card` sets `--verdict-color`/`--verdict-soft` per `status.verdict.action` (`open` = breeze teal, `maybe` = gold, `closed` = ember/coral). This drives the headline color, the aurora background wash, and the thermal gauge marker ring.
+- Signature element: `ThermalGauge` (in `src/routes/index.tsx`) is a self-scaling horizontal gradient bar plotting outside temperature, the cooling threshold, and the forecast low. It is the dashboard's one recurring "instrument" visual.
+- Chart/room accent colors are plain hex constants near the top of `src/routes/index.tsx` (`roomColors`, `outsideColor`, `outsideForecastColor`, `sparklineRiseColor`, etc.) rather than reading CSS variables, because Recharts needs literal color strings and the palette was chosen to read acceptably on both light and dark panel surfaces. If the palette changes, update both the CSS tokens and these JS constants together.
+- Theme follows the OS/browser color-scheme only — there is no manual light/dark toggle in the UI (a `ThemeToggle` component existed briefly but was removed by request; do not re-add a manual toggle without checking first). An inline anti-flash script (`themeInitScript` in `src/routes/__root.tsx`) sets the `dark`/`light` class on `<html>` from `prefers-color-scheme` before hydration, and keeps a live `matchMedia` listener so the class updates immediately if the system theme changes while the tab is open.
+- `src/components/Header.tsx`, `src/components/Footer.tsx`, and `src/routes/about.tsx` are leftover scaffold demo files, not wired into `__root.tsx` and not part of the product surface; they reference CSS variables (`--sea-ink`, `--page-wrap`, etc.) that no longer exist. They were intentionally left as-is (dead/unused) rather than restyled, since `/about` is not linked from the dashboard.
+- Motion respects `prefers-reduced-motion` (aurora drift, gauge marker pulse, and card entrance animations are disabled) via a media query at the bottom of `src/styles.css`.
+
 ## Environment
 
 Local-only files:

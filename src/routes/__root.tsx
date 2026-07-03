@@ -12,6 +12,9 @@ import appCss from "../styles.css?url";
 
 const clerkEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 
+// Always mirrors the OS/browser color-scheme preference, live, with no manual override.
+const themeInitScript = `(function(){try{var q=window.matchMedia('(prefers-color-scheme: dark)');var el=document.documentElement;function apply(){var r=q.matches?'dark':'light';el.classList.remove('light','dark');el.classList.add(r);el.style.colorScheme=r;}apply();q.addEventListener('change',apply);}catch(e){}})();`;
+
 interface MyRouterContext {
 	queryClient: QueryClient;
 }
@@ -37,6 +40,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	return (
 		<html lang="en" suppressHydrationWarning>
 			<head>
+				<script
+					// biome-ignore lint/security/noDangerouslySetInnerHtml: inline theme bootstrap must run before first paint
+					dangerouslySetInnerHTML={{ __html: themeInitScript }}
+				/>
 				<HeadContent />
 			</head>
 			<body className="font-sans antialiased [overflow-wrap:anywhere] selection:bg-emerald-200/40">
