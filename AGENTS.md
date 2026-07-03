@@ -136,6 +136,7 @@ Environment variables:
 ## Known Gotchas
 
 - The production launcher `scripts/start-railway.mjs` imports the built server-only chunk and starts the background sampler before starting Nitro. The sampler defaults to ten minutes on Railway and one minute locally.
+- The Railway web service defaults the in-process background sampler off unless `BACKGROUND_SAMPLER=true` is explicitly set. Keep production sampling owned by the separate Railway cron sampler service; if the web service starts logging `[window-watcher:cron]`, check `BACKGROUND_SAMPLER` first.
 - `pnpm dev` uses the standard TanStack Start Vite dev server. The explicit `nitro/vite` plugin is loaded only for `vite build`; loading it during `vite dev` caused Nitro's dev worker to fail with `Vite environment "ssr" is unavailable` on this dependency set.
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.

@@ -30,7 +30,19 @@ async function startSampler() {
 	throw new Error("Could not find Window Watcher sampler entrypoint.");
 }
 
-if (process.env.BACKGROUND_SAMPLER !== "false") {
+function shouldStartBackgroundSampler() {
+	if (process.env.BACKGROUND_SAMPLER === "true") {
+		return true;
+	}
+
+	if (process.env.BACKGROUND_SAMPLER === "false") {
+		return false;
+	}
+
+	return !process.env.RAILWAY_ENVIRONMENT_ID && !process.env.RAILWAY_ENVIRONMENT;
+}
+
+if (shouldStartBackgroundSampler()) {
 	await startSampler();
 }
 await import("../.output/server/index.mjs");

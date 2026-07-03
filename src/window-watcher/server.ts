@@ -29,8 +29,23 @@ const DEFAULT_WEATHER_CACHE_MS = 4 * 60 * 1000;
 const DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
 const DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
 const TADO_TOPOLOGY_CACHE_MS = 60 * 60 * 1000;
+const IS_RAILWAY =
+	Boolean(process.env.RAILWAY_ENVIRONMENT_ID) ||
+	Boolean(process.env.RAILWAY_ENVIRONMENT);
 
 loadEnv();
+
+function shouldStartBackgroundSampler() {
+	if (process.env.BACKGROUND_SAMPLER === "true") {
+		return true;
+	}
+
+	if (process.env.BACKGROUND_SAMPLER === "false") {
+		return false;
+	}
+
+	return !IS_RAILWAY;
+}
 
 const config = {
 	locationLabel: process.env.LOCATION_LABEL || "Untergiesing-Harlaching",
@@ -45,7 +60,7 @@ const config = {
 	),
 	outdoorTrendHours: Number(process.env.OUTDOOR_TREND_HOURS || 3),
 	outdoorTrendDeltaC: Number(process.env.OUTDOOR_TREND_DELTA_C || 0.3),
-	backgroundSampler: process.env.BACKGROUND_SAMPLER !== "false",
+	backgroundSampler: shouldStartBackgroundSampler(),
 	weatherCacheMs: Number(
 		process.env.WEATHER_CACHE_MS || DEFAULT_WEATHER_CACHE_MS,
 	),
