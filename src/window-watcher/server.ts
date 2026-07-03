@@ -29,6 +29,11 @@ const DEFAULT_WEATHER_CACHE_MS = 4 * 60 * 1000;
 const DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
 const DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
 const TADO_TOPOLOGY_CACHE_MS = 60 * 60 * 1000;
+const DEFAULT_THERMAL_MASS_TAU_HOURS = 8;
+const DEFAULT_REBOUND_FACTOR = 0.7;
+const DEFAULT_PREDICTION_HORIZON_MINUTES = 90;
+const DEFAULT_MIN_PREDICTED_OPEN_BENEFIT_C = 0.3;
+const DEFAULT_TARGET_MAX_C = 22.5;
 const IS_RAILWAY =
 	Boolean(process.env.RAILWAY_ENVIRONMENT_ID) ||
 	Boolean(process.env.RAILWAY_ENVIRONMENT);
@@ -72,6 +77,19 @@ const config = {
 		process.env.TADO_RATE_LIMIT_BACKOFF_MS ||
 			DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS,
 	),
+	thermalMassTauHours: Number(
+		process.env.THERMAL_MASS_TAU_HOURS || DEFAULT_THERMAL_MASS_TAU_HOURS,
+	),
+	reboundFactor: Number(process.env.REBOUND_FACTOR || DEFAULT_REBOUND_FACTOR),
+	predictionHorizonMinutes: Number(
+		process.env.PREDICTION_HORIZON_MINUTES ||
+			DEFAULT_PREDICTION_HORIZON_MINUTES,
+	),
+	minPredictedOpenBenefitC: Number(
+		process.env.MIN_PREDICTED_OPEN_BENEFIT_C ||
+			DEFAULT_MIN_PREDICTED_OPEN_BENEFIT_C,
+	),
+	targetMaxC: Number(process.env.TARGET_MAX_C || DEFAULT_TARGET_MAX_C),
 };
 
 let refreshInFlight: Promise<TadoToken> | null = null;
@@ -114,6 +132,11 @@ type TadoRoom = {
 	type?: string;
 	temperatureC: number;
 	humidityPercent?: number;
+};
+
+type ModeledRoom = TadoRoom & {
+	differenceC: number;
+	prediction: NonNullable<RoomReading["prediction"]>;
 };
 
 type WeatherSource = {
@@ -791,11 +814,335 @@ function buildForecastSummary(
 	return `Forecast low is ${forecast.minTemperatureC.toFixed(1)} C, still above the ${thresholdC.toFixed(1)} C threshold.`;
 }
 
-function buildRoomTrendVerdict(
+function updateMassTemp(
+	previousMass: number,
+	indoorTemp: number,
+	dtHours: number,
+	tauHours = config.thermalMassTauHours,
+) {
+	const alpha = 1 - Math.exp(-Math.max(0, dtHours) / tauHours);
+	return previousMass + alpha * (indoorTemp - previousMass);
+}
+
+function getRoomHistoryPoints(
+	history: Array<TemperatureHistoryEntry>,
+	zoneId: number | string,
+) {
+	return history
+		.map((entry) => {
+			const room = entry.rooms.find(
+				(candidate) => String(candidate.zoneId) === String(zoneId),
+			);
+			return {
+				time: new Date(entry.checkedAt).getTime(),
+				indoorC: room?.temperatureC,
+				outsideC: entry.outside?.temperatureC,
+			};
+		})
+		.filter(
+			(
+				point,
+			): point is {
+				time: number;
+				indoorC: number;
+				outsideC?: number;
+			} =>
+				Number.isFinite(point.time) &&
+				Number.isFinite(point.indoorC) &&
+				(point.outsideC == null || Number.isFinite(point.outsideC)),
+		)
+		.sort((left, right) => left.time - right.time);
+}
+
+function estimateMassTemperature(
 	room: TadoRoom,
+	history: Array<TemperatureHistoryEntry>,
+	checkedAt: string,
+) {
+	const checkedTime = new Date(checkedAt).getTime();
+	const cutoff =
+		checkedTime - Math.max(12, config.thermalMassTauHours * 2) * 60 * 60 * 1000;
+	const points = getRoomHistoryPoints(history, room.zoneId).filter(
+		(point) => point.time >= cutoff && point.time <= checkedTime,
+	);
+	const samples = [
+		...points,
+		{ time: checkedTime, indoorC: room.temperatureC, outsideC: undefined },
+	];
+
+	let massTemperatureC = samples[0]?.indoorC ?? room.temperatureC;
+	let previousTime = samples[0]?.time ?? checkedTime;
+
+	for (const sample of samples.slice(1)) {
+		const dtHours = (sample.time - previousTime) / (60 * 60 * 1000);
+		if (dtHours > 0) {
+			massTemperatureC = updateMassTemp(
+				massTemperatureC,
+				sample.indoorC,
+				dtHours,
+			);
+			previousTime = sample.time;
+		}
+	}
+
+	return massTemperatureC;
+}
+
+function median(values: Array<number>) {
+	const sorted = values
+		.filter((value) => Number.isFinite(value))
+		.sort((left, right) => left - right);
+	if (!sorted.length) return undefined;
+	const middle = Math.floor(sorted.length / 2);
+	return sorted.length % 2
+		? sorted[middle]
+		: (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function clamp(value: number, min: number, max: number) {
+	return Math.min(max, Math.max(min, value));
+}
+
+function roundPredictionValue(value: number) {
+	return Math.round(value * 100) / 100;
+}
+
+function estimateObservedCoolingRate(
+	room: TadoRoom,
+	history: Array<TemperatureHistoryEntry>,
+) {
+	const points = getRoomHistoryPoints(history, room.zoneId);
+	const rates: Array<number> = [];
+
+	for (let index = 1; index < points.length; index += 1) {
+		const previous = points[index - 1];
+		const current = points[index];
+		if (previous.outsideC == null) continue;
+
+		const dtHours = (current.time - previous.time) / (60 * 60 * 1000);
+		if (dtHours < 5 / 60 || dtHours > 2) continue;
+
+		const coolingGapC = previous.indoorC - previous.outsideC;
+		const rate = (current.indoorC - previous.indoorC) / dtHours;
+		if (coolingGapC > 0.5 && rate <= 0.05) rates.push(rate);
+	}
+
+	const observed = median(rates);
+	if (observed == null) return undefined;
+	return clamp(observed, -1.5, -0.05);
+}
+
+function estimateLearnedOpenOffset(
+	room: TadoRoom,
+	history: Array<TemperatureHistoryEntry>,
+) {
+	const points = getRoomHistoryPoints(history, room.zoneId);
+	const offsets: Array<number> = [];
+
+	for (let index = 1; index < points.length; index += 1) {
+		const previous = points[index - 1];
+		const current = points[index];
+		if (previous.outsideC == null || current.outsideC == null) continue;
+
+		const dtHours = (current.time - previous.time) / (60 * 60 * 1000);
+		if (dtHours < 10 / 60 || dtHours > 2) continue;
+
+		const rate = (current.indoorC - previous.indoorC) / dtHours;
+		const offset = current.indoorC - current.outsideC;
+		if (Math.abs(rate) < 0.1 && offset > 0.5) offsets.push(offset);
+	}
+
+	const learned = median(offsets);
+	if (learned == null) return undefined;
+	return clamp(learned, 0.5, 8);
+}
+
+function getForecastTemperatureAt(
+	forecast: ReturnType<typeof analyzeForecast>,
+	targetTime: number,
+) {
+	const points = forecast?.actionablePoints || [];
+	if (!points.length || !Number.isFinite(targetTime)) return undefined;
+
+	const exact = points.find((point) => point.timestamp === targetTime);
+	if (exact) return exact.temperatureC;
+
+	const before = points.findLast((point) => point.timestamp < targetTime);
+	const after = points.find((point) => point.timestamp > targetTime);
+	if (!before || !after) {
+		return before?.temperatureC ?? after?.temperatureC;
+	}
+
+	const progress =
+		(targetTime - before.timestamp) / (after.timestamp - before.timestamp);
+	return (
+		before.temperatureC + (after.temperatureC - before.temperatureC) * progress
+	);
+}
+
+function buildRoomPrediction(
+	room: TadoRoom,
+	outsideC: number,
+	history: Array<TemperatureHistoryEntry>,
+	checkedAt: string,
+	forecast: ReturnType<typeof analyzeForecast>,
+) {
+	const checkedTime = new Date(checkedAt).getTime();
+	const horizonMinutes = config.predictionHorizonMinutes;
+	const horizonHours = horizonMinutes / 60;
+	const horizonEnd = checkedTime + horizonMinutes * 60 * 1000;
+	const forecastPoints = (forecast?.actionablePoints || []).filter(
+		(point) => point.timestamp >= checkedTime && point.timestamp <= horizonEnd,
+	);
+	const outdoorMinC = Math.min(
+		outsideC,
+		...forecastPoints.map((point) => point.temperatureC),
+	);
+	const outdoorAtHorizonC =
+		getForecastTemperatureAt(forecast, horizonEnd) ??
+		forecastPoints.at(-1)?.temperatureC ??
+		outsideC;
+	const massTemperatureC = estimateMassTemperature(room, history, checkedAt);
+	const reboundRiskC = Math.max(0, massTemperatureC - room.temperatureC);
+	const expectedReboundC = config.reboundFactor * reboundRiskC;
+	const effectiveHotTemperatureC = room.temperatureC + expectedReboundC;
+	const observedCoolingRateCPerHour = estimateObservedCoolingRate(
+		room,
+		history,
+	);
+	const learnedOpenOffsetC = estimateLearnedOpenOffset(room, history);
+	const modeledOpenRateCPerHour = clamp(
+		0.28 * (outdoorAtHorizonC - room.temperatureC) +
+			0.1 * (massTemperatureC - room.temperatureC),
+		-1.2,
+		0.5,
+	);
+	const openRateCPerHour =
+		observedCoolingRateCPerHour == null
+			? modeledOpenRateCPerHour
+			: clamp(
+					observedCoolingRateCPerHour +
+						0.06 * (massTemperatureC - room.temperatureC),
+					-1.5,
+					0.5,
+				);
+	const rawPredictedOpenC = room.temperatureC + openRateCPerHour * horizonHours;
+	const openWindowFloorC =
+		learnedOpenOffsetC == null
+			? undefined
+			: outdoorAtHorizonC + learnedOpenOffsetC;
+	const predictedOpenTemperatureC =
+		openWindowFloorC == null
+			? rawPredictedOpenC
+			: Math.max(rawPredictedOpenC, openWindowFloorC);
+	const predictedClosedTemperatureC = room.temperatureC + expectedReboundC;
+	const predictedOpenBenefitC =
+		predictedClosedTemperatureC - predictedOpenTemperatureC;
+	const openUsefulOutdoorThresholdC =
+		effectiveHotTemperatureC - config.minPredictedOpenBenefitC;
+	const coolingWindowStartsAt = forecastPoints.find(
+		(point) => point.temperatureC <= openUsefulOutdoorThresholdC,
+	)?.time;
+	const coolingWindowEndsAt =
+		learnedOpenOffsetC == null
+			? undefined
+			: forecastPoints.find(
+					(point) =>
+						point.temperatureC + learnedOpenOffsetC >=
+						predictedClosedTemperatureC - config.minPredictedOpenBenefitC / 2,
+				)?.time;
+
+	return {
+		horizonMinutes,
+		massTemperatureC: roundPredictionValue(massTemperatureC),
+		reboundRiskC: roundPredictionValue(reboundRiskC),
+		expectedReboundC: roundPredictionValue(expectedReboundC),
+		effectiveHotTemperatureC: roundPredictionValue(effectiveHotTemperatureC),
+		predictedOpenTemperatureC: roundPredictionValue(predictedOpenTemperatureC),
+		predictedClosedTemperatureC: roundPredictionValue(
+			predictedClosedTemperatureC,
+		),
+		predictedOpenBenefitC: roundPredictionValue(predictedOpenBenefitC),
+		coolingOpportunityC: roundPredictionValue(
+			effectiveHotTemperatureC - outdoorMinC,
+		),
+		observedCoolingRateCPerHour:
+			observedCoolingRateCPerHour == null
+				? undefined
+				: roundPredictionValue(observedCoolingRateCPerHour),
+		learnedOpenOffsetC:
+			learnedOpenOffsetC == null
+				? undefined
+				: roundPredictionValue(learnedOpenOffsetC),
+		openWindowFloorC:
+			openWindowFloorC == null
+				? undefined
+				: roundPredictionValue(openWindowFloorC),
+		coolingWindowStartsAt,
+		coolingWindowEndsAt,
+	} satisfies NonNullable<RoomReading["prediction"]>;
+}
+
+function buildRecommendationPrediction(room: ModeledRoom) {
+	const prediction = room.prediction;
+	return {
+		referenceZoneId: room.zoneId,
+		referenceZoneName: room.zoneName,
+		horizonMinutes: prediction.horizonMinutes,
+		targetMaxC: config.targetMaxC,
+		massTemperatureC: prediction.massTemperatureC,
+		expectedReboundC: prediction.expectedReboundC,
+		predictedOpenTemperatureC: prediction.predictedOpenTemperatureC,
+		predictedClosedTemperatureC: prediction.predictedClosedTemperatureC,
+		predictedOpenBenefitC: prediction.predictedOpenBenefitC,
+		coolingOpportunityC: prediction.coolingOpportunityC,
+		openWindowFloorC: prediction.openWindowFloorC,
+		coolingWindowStartsAt: prediction.coolingWindowStartsAt,
+		coolingWindowEndsAt: prediction.coolingWindowEndsAt,
+	} satisfies NonNullable<CoolingStatus["recommendation"]["prediction"]>;
+}
+
+function buildRoomTrendVerdict(
+	room: ModeledRoom,
 	outsideC: number,
 	trend: ReturnType<typeof analyzeOutdoorTrend>,
 ) {
+	const prediction = room.prediction;
+	if (
+		prediction.predictedOpenBenefitC >= config.minPredictedOpenBenefitC &&
+		prediction.coolingOpportunityC > 0
+	) {
+		return {
+			action: "open" as const,
+			title: "Open this window",
+			detail: `Open air is predicted to beat closing by ${prediction.predictedOpenBenefitC.toFixed(1)} C over ${prediction.horizonMinutes} min.`,
+		};
+	}
+
+	if (
+		prediction.expectedReboundC > 0.3 &&
+		outsideC < room.temperatureC &&
+		prediction.predictedOpenTemperatureC <=
+			prediction.predictedClosedTemperatureC
+	) {
+		return {
+			action: "open" as const,
+			title: "Keep cooling",
+			detail: `Closing now may rebound by about ${prediction.expectedReboundC.toFixed(1)} C.`,
+		};
+	}
+
+	if (
+		prediction.expectedReboundC < 0.2 &&
+		prediction.predictedClosedTemperatureC <= config.targetMaxC
+	) {
+		return {
+			action: "closed" as const,
+			title: "Close soon",
+			detail: `Predicted settled temperature is ${prediction.predictedClosedTemperatureC.toFixed(1)} C.`,
+		};
+	}
+
 	if (trend.direction === "falling") {
 		const limitC = room.temperatureC + 1;
 		const difference = limitC - outsideC;
@@ -836,7 +1183,7 @@ function buildRoomTrendVerdict(
 }
 
 function buildTrendVerdict(
-	rooms: Array<TadoRoom>,
+	rooms: Array<ModeledRoom>,
 	outsideC: number,
 	trend: ReturnType<typeof analyzeOutdoorTrend>,
 	forecast?: ReturnType<typeof analyzeForecast>,
@@ -847,6 +1194,127 @@ function buildTrendVerdict(
 	const warmestRoom = rooms.reduce((warmest, room) =>
 		room.temperatureC > warmest.temperatureC ? room : warmest,
 	);
+	const bestOpenRoom = rooms.reduce((best, room) =>
+		room.prediction.predictedOpenBenefitC >
+		best.prediction.predictedOpenBenefitC
+			? room
+			: best,
+	);
+	const hottestSettledRoom = rooms.reduce((hottest, room) =>
+		room.prediction.predictedClosedTemperatureC >
+		hottest.prediction.predictedClosedTemperatureC
+			? room
+			: hottest,
+	);
+	const predictiveReferenceRoom =
+		bestOpenRoom.prediction.predictedOpenBenefitC > 0
+			? bestOpenRoom
+			: hottestSettledRoom;
+	const predictiveThresholdC =
+		predictiveReferenceRoom.prediction.effectiveHotTemperatureC -
+		config.minPredictedOpenBenefitC;
+	const predictiveMarginToThresholdC = predictiveThresholdC - outsideC;
+	const predictiveThresholdAt = findThresholdTime(
+		forecast,
+		predictiveThresholdC,
+	);
+	const predictiveForecastSummary = buildForecastSummary(
+		forecast,
+		predictiveThresholdAt,
+		predictiveThresholdC,
+	);
+	const predictiveForecast = forecast
+		? {
+				horizonHours: forecast.horizonHours,
+				minTemperatureC: forecast.minTemperatureC,
+				minAt: forecast.minAt,
+				changeC: forecast.changeC,
+				reachesThresholdAt: predictiveThresholdAt,
+				summary: predictiveForecastSummary,
+				source: forecast.source,
+				points: forecast.points.map((point) => ({
+					time: point.time,
+					temperatureC: point.temperatureC,
+				})),
+			}
+		: undefined;
+	const predictiveSummary = buildRecommendationPrediction(
+		predictiveReferenceRoom,
+	);
+
+	if (
+		predictiveReferenceRoom.prediction.predictedOpenBenefitC >=
+			config.minPredictedOpenBenefitC &&
+		predictiveReferenceRoom.prediction.coolingOpportunityC > 0
+	) {
+		return {
+			referenceRoom: predictiveReferenceRoom,
+			action: "open" as const,
+			title: "Open / keep open",
+			detail: `Closing now predicts ${predictiveReferenceRoom.zoneName} at ${predictiveReferenceRoom.prediction.predictedClosedTemperatureC.toFixed(1)} C; open air is ${predictiveReferenceRoom.prediction.predictedOpenBenefitC.toFixed(1)} C better over ${predictiveReferenceRoom.prediction.horizonMinutes} min.`,
+			strategy: "rebound-aware-predictive-open",
+			thresholdC: predictiveThresholdC,
+			marginToThresholdC: predictiveMarginToThresholdC,
+			forecast: predictiveForecast,
+			prediction: predictiveSummary,
+		};
+	}
+
+	if (
+		predictiveReferenceRoom.prediction.expectedReboundC > 0.3 &&
+		outsideC < predictiveReferenceRoom.temperatureC &&
+		predictiveReferenceRoom.prediction.predictedOpenTemperatureC <=
+			predictiveReferenceRoom.prediction.predictedClosedTemperatureC
+	) {
+		return {
+			referenceRoom: predictiveReferenceRoom,
+			action: "open" as const,
+			title: "Keep cooling",
+			detail: `${predictiveReferenceRoom.zoneName} air is cooler, but stored heat still implies about ${predictiveReferenceRoom.prediction.expectedReboundC.toFixed(1)} C rebound if you close now.`,
+			strategy: "rebound-aware-keep-cooling",
+			thresholdC: predictiveThresholdC,
+			marginToThresholdC: predictiveMarginToThresholdC,
+			forecast: predictiveForecast,
+			prediction: predictiveSummary,
+		};
+	}
+
+	if (
+		hottestSettledRoom.prediction.expectedReboundC < 0.2 &&
+		hottestSettledRoom.prediction.predictedClosedTemperatureC <=
+			config.targetMaxC
+	) {
+		return {
+			referenceRoom: hottestSettledRoom,
+			action: "closed" as const,
+			title: "Close soon",
+			detail: `${hottestSettledRoom.zoneName} should settle near ${hottestSettledRoom.prediction.predictedClosedTemperatureC.toFixed(1)} C after closing, within the ${config.targetMaxC.toFixed(1)} C target.`,
+			strategy: "rebound-aware-close-settled",
+			thresholdC:
+				hottestSettledRoom.prediction.effectiveHotTemperatureC -
+				config.minPredictedOpenBenefitC,
+			marginToThresholdC:
+				hottestSettledRoom.prediction.effectiveHotTemperatureC -
+				config.minPredictedOpenBenefitC -
+				outsideC,
+			forecast: predictiveForecast,
+			prediction: buildRecommendationPrediction(hottestSettledRoom),
+		};
+	}
+
+	if (predictiveThresholdAt) {
+		return {
+			referenceRoom: predictiveReferenceRoom,
+			action: "maybe" as const,
+			title: "Open later",
+			detail: `Forecast should make open-window cooling useful around ${formatForecastTime(predictiveThresholdAt)}.`,
+			strategy: "rebound-aware-forecast-window",
+			thresholdC: predictiveThresholdC,
+			marginToThresholdC: predictiveMarginToThresholdC,
+			forecast: predictiveForecast,
+			prediction: predictiveSummary,
+		};
+	}
 
 	if (trend.direction === "falling") {
 		const limitC = warmestRoom.temperatureC + 1;
@@ -879,6 +1347,7 @@ function buildTrendVerdict(
 			strategy: "falling-outdoor-warmest-plus-one",
 			thresholdC: limitC,
 			marginToThresholdC,
+			prediction: buildRecommendationPrediction(warmestRoom),
 			forecast: forecast
 				? {
 						horizonHours: forecast.horizonHours,
@@ -915,6 +1384,7 @@ function buildTrendVerdict(
 			strategy: "rising-or-steady-outdoor-coldest-minus-two",
 			thresholdC: limitC,
 			marginToThresholdC,
+			prediction: buildRecommendationPrediction(coldestRoom),
 			forecast: forecast
 				? {
 						horizonHours: forecast.horizonHours,
@@ -942,6 +1412,7 @@ function buildTrendVerdict(
 			strategy: "forecast-cooling-window",
 			thresholdC: limitC,
 			marginToThresholdC,
+			prediction: buildRecommendationPrediction(coldestRoom),
 			forecast: forecast
 				? {
 						horizonHours: forecast.horizonHours,
@@ -969,6 +1440,7 @@ function buildTrendVerdict(
 			strategy: "rising-or-steady-outdoor-coldest-minus-two",
 			thresholdC: limitC,
 			marginToThresholdC,
+			prediction: buildRecommendationPrediction(coldestRoom),
 			forecast: forecast
 				? {
 						horizonHours: forecast.horizonHours,
@@ -995,6 +1467,7 @@ function buildTrendVerdict(
 		strategy: "rising-or-steady-outdoor-coldest-minus-two",
 		thresholdC: limitC,
 		marginToThresholdC,
+		prediction: buildRecommendationPrediction(coldestRoom),
 		forecast: forecast
 			? {
 					horizonHours: forecast.horizonHours,
@@ -1036,6 +1509,7 @@ async function appendHistory(status: CoolingStatus) {
 			temperatureC: room.temperatureC,
 			humidityPercent: room.humidityPercent,
 			differenceC: room.differenceC,
+			prediction: room.prediction,
 			verdictAction: room.verdict.action,
 		})),
 		recommendation: status.recommendation,
@@ -1239,7 +1713,7 @@ async function readOutsideWeatherWithFallback(
 
 async function collectFreshCoolingStatus() {
 	const previousHistory = await readHistory(
-		Math.ceil(config.outdoorTrendHours * 60),
+		Math.ceil(Math.max(config.outdoorTrendHours, 24) * 60),
 	);
 	const outside = await readOutsideWeatherWithFallback(previousHistory);
 	const outsideC = outside.current?.temperatureC;
@@ -1260,16 +1734,26 @@ async function collectFreshCoolingStatus() {
 
 	const trend = analyzeOutdoorTrend(previousHistory, outsideC, checkedAt);
 	const forecast = analyzeForecast(outside, outsideC, checkedAt);
+	const modeledRooms = target.rooms.map((room) => ({
+		...room,
+		differenceC: room.temperatureC - outsideC,
+		prediction: buildRoomPrediction(
+			room,
+			outsideC,
+			previousHistory,
+			checkedAt,
+			forecast,
+		),
+	}));
 	const recommendation = buildTrendVerdict(
-		target.rooms,
+		modeledRooms,
 		outsideC,
 		trend,
 		forecast,
 	);
 	const referenceRoom = recommendation.referenceRoom;
-	const rooms = target.rooms.map((room) => ({
+	const rooms = modeledRooms.map((room) => ({
 		...room,
-		differenceC: room.temperatureC - outsideC,
 		verdict: buildRoomTrendVerdict(room, outsideC, trend),
 	}));
 
@@ -1301,6 +1785,7 @@ async function collectFreshCoolingStatus() {
 		recommendation: {
 			outdoorTrend: trend,
 			forecast: recommendation.forecast,
+			prediction: recommendation.prediction,
 			strategy: recommendation.strategy,
 			thresholdC: recommendation.thresholdC,
 			marginToThresholdC: recommendation.marginToThresholdC,

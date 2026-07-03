@@ -117,6 +117,11 @@ Environment variables:
 - `SAMPLE_TRIGGER_TOKEN`, secret bearer token required by `POST /api/sample` for Railway cron-triggered sampling.
 - `OUTDOOR_TREND_HOURS`, default `3`
 - `OUTDOOR_TREND_DELTA_C`, default `0.3`
+- `THERMAL_MASS_TAU_HOURS`, default `8`. Controls the slow EMA used as the per-room stored-heat proxy for rebound-aware recommendations.
+- `REBOUND_FACTOR`, default `0.7`. Multiplies positive `massTemp - indoorTemp` to estimate post-close rebound.
+- `PREDICTION_HORIZON_MINUTES`, default `90`. Horizon for comparing open-window vs closed-window room predictions.
+- `MIN_PREDICTED_OPEN_BENEFIT_C`, default `0.3`. Minimum predicted open-vs-closed improvement before the app treats opening as meaningfully useful.
+- `TARGET_MAX_C`, default `22.5`. Settled-temperature target used for close-soon recommendations.
 - `PORT`, used by the production Start server
 - `VITE_CLERK_PUBLISHABLE_KEY`, Clerk public browser key. Required on Railway for the browser sign-in UI.
 - `CLERK_SECRET_KEY`, Clerk server key. Never commit it.
@@ -134,7 +139,8 @@ Environment variables:
 - Clerk is wired through `src/start.ts` with conditional `clerkMiddleware()` and `src/routes/__root.tsx` with conditional `ClerkProvider`. Auth is off by default, including on Railway, until `VITE_WINDOW_WATCHER_AUTH=true` or `WINDOW_WATCHER_AUTH=true` is set with valid Clerk keys.
 - The route can render a sign-in prompt publicly, but `getDashboardData` enforces authentication and a verified Google OAuth account matching `AUTHORIZED_EMAIL` before importing the private temperature server module.
 - Server functions dynamically import `src/window-watcher/server.ts`, which is marked `@tanstack/react-start/server-only`.
-- `server.ts` owns tado token refresh, Bright Sky DWD observation reads, Bright Sky/DWD forecast reads, recommendation logic, and JSONL history persistence.
+- `server.ts` owns tado token refresh, Bright Sky DWD observation reads, Bright Sky/DWD forecast reads, rebound-aware recommendation logic, and JSONL history persistence.
+- Recommendations use per-room thermal-mass estimates from a slow EMA, expected rebound, observed cooling-rate/open-offset history, and 60-120 minute open-vs-closed predictions instead of only a fixed indoor/outdoor temperature gap.
 - The production web service can run in Railway Serverless/App Sleeping mode with `BACKGROUND_SAMPLER=false`. In that mode, fresh samples are taken on dashboard requests instead of an always-on interval.
 - `POST /api/sample` records one fresh sample for Railway cron. It requires `Authorization: Bearer $SAMPLE_TRIGGER_TOKEN` and must not be exposed without that secret.
 - If tado is rate-limited or throws after weather was fetched, the sampler records an outside-only history row with `rooms: []`. These rows keep outdoor history complete for charts and trend analysis, but must not be treated as the current room dashboard status.

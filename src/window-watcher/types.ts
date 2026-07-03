@@ -9,6 +9,22 @@ export type RoomReading = {
 	temperatureC: number;
 	humidityPercent?: number;
 	differenceC: number;
+	prediction?: {
+		horizonMinutes: number;
+		massTemperatureC: number;
+		reboundRiskC: number;
+		expectedReboundC: number;
+		effectiveHotTemperatureC: number;
+		predictedOpenTemperatureC: number;
+		predictedClosedTemperatureC: number;
+		predictedOpenBenefitC: number;
+		coolingOpportunityC: number;
+		observedCoolingRateCPerHour?: number;
+		learnedOpenOffsetC?: number;
+		openWindowFloorC?: number;
+		coolingWindowStartsAt?: string;
+		coolingWindowEndsAt?: string;
+	};
 	verdict: {
 		action: VerdictAction;
 		title: string;
@@ -50,6 +66,7 @@ export type TemperatureHistoryEntry = {
 			"zoneId" | "zoneName" | "temperatureC" | "humidityPercent" | "differenceC"
 		> & {
 			verdictAction?: VerdictAction;
+			prediction?: RoomReading["prediction"];
 		}
 	>;
 	recommendation?: CoolingStatus["recommendation"];
@@ -114,6 +131,21 @@ export type CoolingStatus = {
 				time: string;
 				temperatureC: number;
 			}>;
+		};
+		prediction?: {
+			referenceZoneId?: number | string;
+			referenceZoneName?: string;
+			horizonMinutes: number;
+			targetMaxC: number;
+			massTemperatureC: number;
+			expectedReboundC: number;
+			predictedOpenTemperatureC: number;
+			predictedClosedTemperatureC: number;
+			predictedOpenBenefitC: number;
+			coolingOpportunityC: number;
+			openWindowFloorC?: number;
+			coolingWindowStartsAt?: string;
+			coolingWindowEndsAt?: string;
 		};
 		strategy: string;
 		thresholdC: number;

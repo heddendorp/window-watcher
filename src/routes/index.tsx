@@ -281,6 +281,7 @@ function Dashboard({
 	);
 	const latestAt = new Date(status.checkedAt);
 	const measurementAt = new Date(status.lastFreshAt || status.checkedAt);
+	const recommendationPrediction = status.recommendation.prediction;
 	const measurementAge = formatMeasurementAge(
 		measurementAt,
 		measurementReferenceAt,
@@ -412,11 +413,46 @@ function Dashboard({
 								</p>
 							</div>
 						)}
+						{recommendationPrediction ? (
+							<div className="stat-chip">
+								<p className="kicker">
+									{recommendationPrediction.horizonMinutes}m prediction
+								</p>
+								<p className="mono-num mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
+									{formatTemp(
+										recommendationPrediction.predictedOpenTemperatureC,
+									)}{" "}
+									open ·{" "}
+									{formatTemp(
+										recommendationPrediction.predictedClosedTemperatureC,
+									)}{" "}
+									closed
+								</p>
+							</div>
+						) : null}
+						{recommendationPrediction ? (
+							<div className="stat-chip">
+								<p className="kicker">Rebound risk</p>
+								<p className="mono-num mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
+									{formatDelta(recommendationPrediction.expectedReboundC)} ·
+									mass {formatTemp(recommendationPrediction.massTemperatureC)}
+								</p>
+							</div>
+						) : null}
 					</div>
 
 					{status.recommendation.forecast?.summary ? (
 						<p className="-mt-3 text-sm font-semibold text-[var(--ww-ink-soft)]">
 							{status.recommendation.forecast.summary}
+						</p>
+					) : null}
+					{recommendationPrediction?.coolingWindowEndsAt ? (
+						<p className="-mt-3 text-sm font-semibold text-[var(--ww-ink-soft)]">
+							Current cooling floor fades around{" "}
+							{formatTime(
+								new Date(recommendationPrediction.coolingWindowEndsAt),
+							)}
+							.
 						</p>
 					) : null}
 
@@ -968,6 +1004,7 @@ function RoomCard({
 	const sparklinePoints = getRoomSparkline(history, room.zoneId);
 	const hourlyTrend = getRoomHourlyTrend(history, room.zoneId);
 	const trendClass = hourlyTrend?.direction || "steady";
+	const prediction = room.prediction;
 
 	return (
 		<Card
@@ -987,6 +1024,14 @@ function RoomCard({
 						? ""
 						: ` · ${room.humidityPercent.toFixed(0)}% humidity`}
 				</p>
+				{prediction ? (
+					<p className="mt-1 text-xs font-bold text-[var(--ww-ink-faint)]">
+						{prediction.horizonMinutes}m:{" "}
+						{formatTemp(prediction.predictedOpenTemperatureC)} open ·{" "}
+						{formatTemp(prediction.predictedClosedTemperatureC)} closed ·{" "}
+						{formatDelta(prediction.expectedReboundC)} rebound
+					</p>
+				) : null}
 			</CardContent>
 			<Sparkline points={sparklinePoints} />
 		</Card>
