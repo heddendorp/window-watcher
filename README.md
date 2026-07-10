@@ -19,7 +19,9 @@ Important local files:
 
 - `.tado-token.json`: local tado OAuth token, ignored by git
 - `data/temperature-history.jsonl`: persistent temperature history, ignored by git
-- `SAMPLE_INTERVAL_MS`: optional sampler override; defaults to one minute locally and five minutes on Railway.
+- `SAMPLE_INTERVAL_MS`: optional sampler override; defaults to one minute locally and ten minutes on Railway.
+- `PREDICTION_HORIZON_MINUTES`: comparison window for open versus closed room predictions; defaults to 90 minutes.
+- `MIN_FORECAST_COOLING_WINDOW_MINUTES`: how long forecast air must remain useful before the dashboard recommends opening later; defaults to 30 minutes.
 
 Authentication:
 
@@ -35,13 +37,14 @@ Authentication:
 
 ```bash
 pnpm run check
+pnpm run typecheck
 pnpm run build
 pnpm run start
 ```
 
 ## Deploy
 
-Railway is represented by `nixpacks.toml`. The service should run as an always-on web service so the dashboard remains available; production sampling defaults to every five minutes on Railway.
+Railway is represented by `nixpacks.toml`. The service should run as an always-on web service so the dashboard remains available; production sampling defaults to every ten minutes on Railway.
 
 Railway setup:
 
@@ -54,4 +57,4 @@ Railway setup:
 
 Railway does not replace app-level auth here. Its "Login with Railway" feature is for letting applications authenticate Railway users and access Railway resources, while this dashboard needs Google sign-in for one private user. Clerk is the cleaner fit and is also one of Railway's documented frontend-auth options.
 
-The app uses generated shadcn UI components for controls, including the chart range buttons. It reads Bright Sky DWD observations for current outdoor temperature and Bright Sky/DWD forecast data so it can show when a useful cooling window is expected soon.
+The app uses generated shadcn UI components for controls, including the chart range buttons. It reads Bright Sky DWD observations for current outdoor temperature and Bright Sky/DWD forecast data. Predictions integrate the forecast across the configured horizon and only announce a future cooling window when it remains useful for the configured minimum duration.

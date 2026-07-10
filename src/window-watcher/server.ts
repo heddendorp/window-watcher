@@ -4,6 +4,11 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+	findSustainedThresholdWindow,
+	getForecastTemperatureAt,
+	getTimeWeightedForecastTemperature,
+} from "./forecast-model";
 import type {
 	CoolingStatus,
 	RoomReading,
@@ -34,6 +39,7 @@ const DEFAULT_REBOUND_FACTOR = 0.7;
 const DEFAULT_PREDICTION_HORIZON_MINUTES = 90;
 const DEFAULT_MIN_PREDICTED_OPEN_BENEFIT_C = 0.3;
 const DEFAULT_TARGET_MAX_C = 22.5;
+const DEFAULT_MIN_FORECAST_COOLING_WINDOW_MINUTES = 30;
 const IS_RAILWAY =
 	Boolean(process.env.RAILWAY_ENVIRONMENT_ID) ||
 	Boolean(process.env.RAILWAY_ENVIRONMENT);
@@ -90,6 +96,10 @@ const config = {
 			DEFAULT_MIN_PREDICTED_OPEN_BENEFIT_C,
 	),
 	targetMaxC: Number(process.env.TARGET_MAX_C || DEFAULT_TARGET_MAX_C),
+	minForecastCoolingWindowMinutes: Number(
+		process.env.MIN_FORECAST_COOLING_WINDOW_MINUTES ||
+			DEFAULT_MIN_FORECAST_COOLING_WINDOW_MINUTES,
+	),
 };
 
 let refreshInFlight: Promise<TadoToken> | null = null;
@@ -225,10 +235,15 @@ async function requestJson<T>(
 	}
 
 	if (!response.ok) {
+		const providerMessage = [
+			data.message,
+			data.error_description,
+			data.error,
+		].find(
+			(value): value is string => typeof value === "string" && value.length > 0,
+		);
 		const message =
-			data.message ||
-			data.error_description ||
-			data.error ||
+			providerMessage ||
 			`${errorContext || "Request"} failed with ${response.status}`;
 		const error = new Error(message) as Error & {
 			status?: number;
@@ -489,7 +504,7 @@ async function resolveTadoRooms() {
 		? zones.filter((zone) => String(zone.id) === String(config.zoneId))
 		: zones;
 
-	const roomResults = [];
+	const roomResults: Array<TadoRoom | null> = [];
 	for (const zone of selectedZones) {
 		const state = await tadoApi<{
 			sensorDataPoints?: {
@@ -693,7 +708,7 @@ function buildVerdict(insideC: number, outsideC: number, roomName = "inside") {
 		return {
 			action: "open" as const,
 			title: "Open the windows",
-			detail: `Outside is ${difference.toFixed(1)} C cooler than ${roomName}.`,
+			detail: `Outside is ${difference.toFixed(1)} °C cooler than ${roomName}.`,
 		};
 	}
 
@@ -701,14 +716,14 @@ function buildVerdict(insideC: number, outsideC: number, roomName = "inside") {
 		return {
 			action: "maybe" as const,
 			title: "Only open briefly",
-			detail: `Outside is just ${difference.toFixed(1)} C cooler than ${roomName}.`,
+			detail: `Outside is just ${difference.toFixed(1)} °C cooler than ${roomName}.`,
 		};
 	}
 
 	return {
 		action: "closed" as const,
 		title: "Keep windows closed",
-		detail: `Outside is ${Math.abs(difference).toFixed(1)} C warmer than ${roomName}.`,
+		detail: `Outside is ${Math.abs(difference).toFixed(1)} °C warmer than ${roomName}.`,
 	};
 }
 
@@ -772,9 +787,12 @@ function analyzeForecast(
 	const points = (outside.forecast?.points || []).filter(
 		(point) => point.timestamp >= chartStart && point.timestamp <= horizonEnd,
 	);
-	const actionablePoints = points.filter(
-		(point) => point.timestamp >= checkedTime && point.timestamp <= horizonEnd,
-	);
+	const actionablePoints = [
+		{ time: checkedAt, timestamp: checkedTime, temperatureC: outsideC },
+		...points.filter(
+			(point) => point.timestamp > checkedTime && point.timestamp <= horizonEnd,
+		),
+	];
 
 	if (!actionablePoints.length) return undefined;
 
@@ -797,9 +815,12 @@ function findThresholdTime(
 	forecast: ReturnType<typeof analyzeForecast>,
 	thresholdC: number,
 ) {
-	return forecast?.actionablePoints.find(
-		(point) => point.temperatureC <= thresholdC,
-	)?.time;
+	const window = findSustainedThresholdWindow(
+		forecast?.actionablePoints || [],
+		thresholdC,
+		config.minForecastCoolingWindowMinutes * 60 * 1000,
+	);
+	return window ? new Date(window.startTime).toISOString() : undefined;
 }
 
 function buildForecastSummary(
@@ -811,7 +832,7 @@ function buildForecastSummary(
 	if (reachesThresholdAt) {
 		return `Forecast reaches the cooling threshold around ${formatForecastTime(reachesThresholdAt)}.`;
 	}
-	return `Forecast low is ${forecast.minTemperatureC.toFixed(1)} C, still above the ${thresholdC.toFixed(1)} C threshold.`;
+	return `Forecast low is ${forecast.minTemperatureC.toFixed(1)} °C, still above the ${thresholdC.toFixed(1)} °C threshold.`;
 }
 
 function updateMassTemp(
@@ -845,7 +866,7 @@ function getRoomHistoryPoints(
 			): point is {
 				time: number;
 				indoorC: number;
-				outsideC?: number;
+				outsideC: number | undefined;
 			} =>
 				Number.isFinite(point.time) &&
 				Number.isFinite(point.indoorC) &&
@@ -957,29 +978,6 @@ function estimateLearnedOpenOffset(
 	return clamp(learned, 0.5, 8);
 }
 
-function getForecastTemperatureAt(
-	forecast: ReturnType<typeof analyzeForecast>,
-	targetTime: number,
-) {
-	const points = forecast?.actionablePoints || [];
-	if (!points.length || !Number.isFinite(targetTime)) return undefined;
-
-	const exact = points.find((point) => point.timestamp === targetTime);
-	if (exact) return exact.temperatureC;
-
-	const before = points.findLast((point) => point.timestamp < targetTime);
-	const after = points.find((point) => point.timestamp > targetTime);
-	if (!before || !after) {
-		return before?.temperatureC ?? after?.temperatureC;
-	}
-
-	const progress =
-		(targetTime - before.timestamp) / (after.timestamp - before.timestamp);
-	return (
-		before.temperatureC + (after.temperatureC - before.temperatureC) * progress
-	);
-}
-
 function buildRoomPrediction(
 	room: TadoRoom,
 	outsideC: number,
@@ -994,12 +992,14 @@ function buildRoomPrediction(
 	const forecastPoints = (forecast?.actionablePoints || []).filter(
 		(point) => point.timestamp >= checkedTime && point.timestamp <= horizonEnd,
 	);
-	const outdoorMinC = Math.min(
-		outsideC,
-		...forecastPoints.map((point) => point.temperatureC),
-	);
+	const averageOutdoorC = getTimeWeightedForecastTemperature({
+		currentTemperatureC: outsideC,
+		startTime: checkedTime,
+		endTime: horizonEnd,
+		forecastPoints,
+	});
 	const outdoorAtHorizonC =
-		getForecastTemperatureAt(forecast, horizonEnd) ??
+		getForecastTemperatureAt(forecast?.actionablePoints || [], horizonEnd) ??
 		forecastPoints.at(-1)?.temperatureC ??
 		outsideC;
 	const massTemperatureC = estimateMassTemperature(room, history, checkedAt);
@@ -1012,19 +1012,22 @@ function buildRoomPrediction(
 	);
 	const learnedOpenOffsetC = estimateLearnedOpenOffset(room, history);
 	const modeledOpenRateCPerHour = clamp(
-		0.28 * (outdoorAtHorizonC - room.temperatureC) +
+		0.28 * (averageOutdoorC - room.temperatureC) +
 			0.1 * (massTemperatureC - room.temperatureC),
 		-1.2,
 		0.5,
 	);
 	const openRateCPerHour =
-		observedCoolingRateCPerHour == null
+		observedCoolingRateCPerHour == null || averageOutdoorC >= room.temperatureC
 			? modeledOpenRateCPerHour
-			: clamp(
-					observedCoolingRateCPerHour +
-						0.06 * (massTemperatureC - room.temperatureC),
-					-1.5,
-					0.5,
+			: Math.max(
+					modeledOpenRateCPerHour,
+					clamp(
+						observedCoolingRateCPerHour +
+							0.06 * (massTemperatureC - room.temperatureC),
+						-1.5,
+						0.5,
+					),
 				);
 	const rawPredictedOpenC = room.temperatureC + openRateCPerHour * horizonHours;
 	const openWindowFloorC =
@@ -1040,17 +1043,14 @@ function buildRoomPrediction(
 		predictedClosedTemperatureC - predictedOpenTemperatureC;
 	const openUsefulOutdoorThresholdC =
 		effectiveHotTemperatureC - config.minPredictedOpenBenefitC;
-	const coolingWindowStartsAt = forecastPoints.find(
-		(point) => point.temperatureC <= openUsefulOutdoorThresholdC,
-	)?.time;
-	const coolingWindowEndsAt =
-		learnedOpenOffsetC == null
-			? undefined
-			: forecastPoints.find(
-					(point) =>
-						point.temperatureC + learnedOpenOffsetC >=
-						predictedClosedTemperatureC - config.minPredictedOpenBenefitC / 2,
-				)?.time;
+	const coolingWindow = findSustainedThresholdWindow(
+		forecastPoints,
+		openUsefulOutdoorThresholdC,
+		config.minForecastCoolingWindowMinutes * 60 * 1000,
+	);
+	const coolingWindowStartsAt = coolingWindow
+		? new Date(coolingWindow.startTime).toISOString()
+		: undefined;
 
 	return {
 		horizonMinutes,
@@ -1064,7 +1064,7 @@ function buildRoomPrediction(
 		),
 		predictedOpenBenefitC: roundPredictionValue(predictedOpenBenefitC),
 		coolingOpportunityC: roundPredictionValue(
-			effectiveHotTemperatureC - outdoorMinC,
+			effectiveHotTemperatureC - outsideC,
 		),
 		observedCoolingRateCPerHour:
 			observedCoolingRateCPerHour == null
@@ -1079,7 +1079,7 @@ function buildRoomPrediction(
 				? undefined
 				: roundPredictionValue(openWindowFloorC),
 		coolingWindowStartsAt,
-		coolingWindowEndsAt,
+		coolingWindowEndsAt: undefined,
 	} satisfies NonNullable<RoomReading["prediction"]>;
 }
 
@@ -1110,12 +1110,13 @@ function buildRoomTrendVerdict(
 	const prediction = room.prediction;
 	if (
 		prediction.predictedOpenBenefitC >= config.minPredictedOpenBenefitC &&
-		prediction.coolingOpportunityC > 0
+		prediction.coolingOpportunityC > 0 &&
+		outsideC < room.temperatureC
 	) {
 		return {
 			action: "open" as const,
 			title: "Open this window",
-			detail: `Open air is predicted to beat closing by ${prediction.predictedOpenBenefitC.toFixed(1)} C over ${prediction.horizonMinutes} min.`,
+			detail: `Open air is predicted to beat closing by ${prediction.predictedOpenBenefitC.toFixed(1)} °C over ${prediction.horizonMinutes} min.`,
 		};
 	}
 
@@ -1128,7 +1129,7 @@ function buildRoomTrendVerdict(
 		return {
 			action: "open" as const,
 			title: "Keep cooling",
-			detail: `Closing now may rebound by about ${prediction.expectedReboundC.toFixed(1)} C.`,
+			detail: `Closing now may rebound by about ${prediction.expectedReboundC.toFixed(1)} °C.`,
 		};
 	}
 
@@ -1139,7 +1140,7 @@ function buildRoomTrendVerdict(
 		return {
 			action: "closed" as const,
 			title: "Close soon",
-			detail: `Predicted settled temperature is ${prediction.predictedClosedTemperatureC.toFixed(1)} C.`,
+			detail: `Predicted settled temperature is ${prediction.predictedClosedTemperatureC.toFixed(1)} °C.`,
 		};
 	}
 
@@ -1152,7 +1153,7 @@ function buildRoomTrendVerdict(
 			detail:
 				outsideC <= limitC
 					? `Outdoor temperature is falling and close enough for ${room.zoneName}.`
-					: `Outside is ${Math.abs(difference).toFixed(1)} C above the falling-air threshold.`,
+					: `Outside is ${Math.abs(difference).toFixed(1)} °C above the falling-air threshold.`,
 		};
 	}
 
@@ -1163,7 +1164,7 @@ function buildRoomTrendVerdict(
 		return {
 			action: "open" as const,
 			title: "Open this window",
-			detail: `Outside is ${difference.toFixed(1)} C cooler than ${room.zoneName}.`,
+			detail: `Outside is ${difference.toFixed(1)} °C cooler than ${room.zoneName}.`,
 		};
 	}
 
@@ -1171,14 +1172,14 @@ function buildRoomTrendVerdict(
 		return {
 			action: "maybe" as const,
 			title: "Only open briefly",
-			detail: `Outside is cooler than ${room.zoneName}, but not by ${config.coolingMarginC.toFixed(1)} C.`,
+			detail: `Outside is cooler than ${room.zoneName}, but not by ${config.coolingMarginC.toFixed(1)} °C.`,
 		};
 	}
 
 	return {
 		action: "closed" as const,
 		title: "Keep closed",
-		detail: `Outside is ${Math.abs(difference).toFixed(1)} C warmer than ${room.zoneName}.`,
+		detail: `Outside is ${Math.abs(difference).toFixed(1)} °C warmer than ${room.zoneName}.`,
 	};
 }
 
@@ -1245,13 +1246,14 @@ function buildTrendVerdict(
 	if (
 		predictiveReferenceRoom.prediction.predictedOpenBenefitC >=
 			config.minPredictedOpenBenefitC &&
-		predictiveReferenceRoom.prediction.coolingOpportunityC > 0
+		predictiveReferenceRoom.prediction.coolingOpportunityC > 0 &&
+		outsideC < predictiveReferenceRoom.temperatureC
 	) {
 		return {
 			referenceRoom: predictiveReferenceRoom,
 			action: "open" as const,
 			title: "Open / keep open",
-			detail: `Closing now predicts ${predictiveReferenceRoom.zoneName} at ${predictiveReferenceRoom.prediction.predictedClosedTemperatureC.toFixed(1)} C; open air is ${predictiveReferenceRoom.prediction.predictedOpenBenefitC.toFixed(1)} C better over ${predictiveReferenceRoom.prediction.horizonMinutes} min.`,
+			detail: `Closing now predicts ${predictiveReferenceRoom.zoneName} at ${predictiveReferenceRoom.prediction.predictedClosedTemperatureC.toFixed(1)} °C; open air is ${predictiveReferenceRoom.prediction.predictedOpenBenefitC.toFixed(1)} °C better over ${predictiveReferenceRoom.prediction.horizonMinutes} min.`,
 			strategy: "rebound-aware-predictive-open",
 			thresholdC: predictiveThresholdC,
 			marginToThresholdC: predictiveMarginToThresholdC,
@@ -1270,7 +1272,7 @@ function buildTrendVerdict(
 			referenceRoom: predictiveReferenceRoom,
 			action: "open" as const,
 			title: "Keep cooling",
-			detail: `${predictiveReferenceRoom.zoneName} air is cooler, but stored heat still implies about ${predictiveReferenceRoom.prediction.expectedReboundC.toFixed(1)} C rebound if you close now.`,
+			detail: `${predictiveReferenceRoom.zoneName} air is cooler, but stored heat still implies about ${predictiveReferenceRoom.prediction.expectedReboundC.toFixed(1)} °C rebound if you close now.`,
 			strategy: "rebound-aware-keep-cooling",
 			thresholdC: predictiveThresholdC,
 			marginToThresholdC: predictiveMarginToThresholdC,
@@ -1288,7 +1290,7 @@ function buildTrendVerdict(
 			referenceRoom: hottestSettledRoom,
 			action: "closed" as const,
 			title: "Close soon",
-			detail: `${hottestSettledRoom.zoneName} should settle near ${hottestSettledRoom.prediction.predictedClosedTemperatureC.toFixed(1)} C after closing, within the ${config.targetMaxC.toFixed(1)} C target.`,
+			detail: `${hottestSettledRoom.zoneName} should settle near ${hottestSettledRoom.prediction.predictedClosedTemperatureC.toFixed(1)} °C after closing, within the ${config.targetMaxC.toFixed(1)} °C target.`,
 			strategy: "rebound-aware-close-settled",
 			thresholdC:
 				hottestSettledRoom.prediction.effectiveHotTemperatureC -
@@ -1340,10 +1342,10 @@ function buildTrendVerdict(
 					? "Open soon"
 					: "Keep windows closed",
 			detail: shouldOpen
-				? `Outdoor temperature is falling; outside is at or below ${warmestRoom.zoneName} plus 1.0 C.`
+				? `Outdoor temperature is falling; outside is at or below ${warmestRoom.zoneName} plus 1.0 °C.`
 				: reachesThresholdAt
 					? `Outdoor temperature is falling and should become useful around ${formatForecastTime(reachesThresholdAt)}.`
-					: `Outdoor temperature is falling, but outside is still ${(outsideC - limitC).toFixed(1)} C above ${warmestRoom.zoneName} plus 1.0 C.`,
+					: `Outdoor temperature is falling, but outside is still ${(outsideC - limitC).toFixed(1)} °C above ${warmestRoom.zoneName} plus 1.0 °C.`,
 			strategy: "falling-outdoor-warmest-plus-one",
 			thresholdC: limitC,
 			marginToThresholdC,
@@ -1380,7 +1382,7 @@ function buildTrendVerdict(
 			referenceRoom: coldestRoom,
 			action: "open" as const,
 			title: "Open the windows",
-			detail: `Outdoor temperature is ${trend.direction}; outside is more than ${config.coolingMarginC.toFixed(1)} C below ${coldestRoom.zoneName}.`,
+			detail: `Outdoor temperature is ${trend.direction}; outside is more than ${config.coolingMarginC.toFixed(1)} °C below ${coldestRoom.zoneName}.`,
 			strategy: "rising-or-steady-outdoor-coldest-minus-two",
 			thresholdC: limitC,
 			marginToThresholdC,
@@ -1436,7 +1438,7 @@ function buildTrendVerdict(
 			referenceRoom: coldestRoom,
 			action: "maybe" as const,
 			title: "Only open briefly",
-			detail: `Outdoor temperature is ${trend.direction}; outside is cooler than ${coldestRoom.zoneName}, but not by ${config.coolingMarginC.toFixed(1)} C.`,
+			detail: `Outdoor temperature is ${trend.direction}; outside is cooler than ${coldestRoom.zoneName}, but not by ${config.coolingMarginC.toFixed(1)} °C.`,
 			strategy: "rising-or-steady-outdoor-coldest-minus-two",
 			thresholdC: limitC,
 			marginToThresholdC,

@@ -69,29 +69,30 @@ Before editing files for a substantial task:
 - TanStack Start
 - TanStack Router file routes
 - TanStack Query for dashboard refresh
-- TanStack DB represented by the local history collection in `src/window-watcher/db.ts`
-- TanStack Form/Table dependencies retained from the requested CLI add-ons; generated demo pages were removed because Window Watcher is the product surface
+- JSONL-backed temperature history, read on the server and rendered directly by the dashboard
+- Generated form/table demo pages and their unused dependencies were removed because Window Watcher is the only product surface
 - Clerk TanStack React Start SDK for Google sign-in and session handling
 - shadcn component setup via `components.json` and generated UI components
 - Tailwind CSS 4
 - Recharts for hoverable dashboard charts
-- pnpm for package management
+- Node.js 24 LTS for local, CI, and Railway builds
+- pnpm 11.11.0 for package management, pinned through `packageManager` in `package.json`
 - Biome for formatting/linting
 - Railway represented by `nixpacks.toml`
 - shadcn UI components are generated in `src/components/ui`; prefer them for controls before adding custom UI primitives
 
 ## Design System
 
-The dashboard was redesigned on 2026-07-03 around an "instrument panel for air" concept: the app reads like a precision weather/climate instrument with a warm, editorial voice for the verdict.
+The dashboard was simplified on 2026-07-10 into a calm household instrument: the current recommendation is still primary, but the product avoids glassmorphism, decorative gradients, oversized radii, hover lifts, and internal implementation labels.
 
-- Fonts: `Fraunces` (variable serif, class `font-display`/`font-serif`) for the app wordmark, verdict headline, and card titles; `Manrope` (`font-sans`, default body) for UI text; `IBM Plex Mono` (`font-mono`, helper class `mono-num`) for temperature readouts, timestamps, and other tabular data. All three are loaded via the Google Fonts `@import` at the top of `src/styles.css`.
-- Color tokens live in `src/styles.css` as `--ww-*` custom properties, defined separately under `:root` (light — cool mist paper, not warm cream) and `.dark` (atmospheric teal-black ink, not flat near-black). The shadcn/ui variables (`--background`, `--primary`, `--border`, etc.) are mapped onto these tokens so existing primitives in `src/components/ui/*` automatically follow the theme. `--primary` is the teal "breeze" accent, so default buttons and the active range-toggle pill are teal by design.
-- Verdict theming: the hero `.hero-card` sets `--verdict-color`/`--verdict-soft` per `status.verdict.action` (`open` = breeze teal, `maybe` = gold, `closed` = ember/coral). This drives the headline color, the aurora background wash, and the thermal gauge marker ring.
-- Signature element: `ThermalGauge` (in `src/routes/index.tsx`) is a self-scaling horizontal gradient bar plotting outside temperature, the cooling threshold, and the forecast low. It is the dashboard's one recurring "instrument" visual.
-- Chart/room accent colors are plain hex constants near the top of `src/routes/index.tsx` (`roomColors`, `outsideColor`, `outsideForecastColor`, `sparklineRiseColor`, etc.) rather than reading CSS variables, because Recharts needs literal color strings and the palette was chosen to read acceptably on both light and dark panel surfaces. If the palette changes, update both the CSS tokens and these JS constants together.
+- Fonts: `Manrope` (`font-sans`, default UI) provides the complete text hierarchy; `IBM Plex Mono` (`font-mono`, helper class `mono-num`) is limited to temperatures, timestamps, and tabular measurements. Both are loaded via the Google Fonts `@import` at the top of `src/styles.css`.
+- Color tokens live in `src/styles.css` as the existing `--ww-*` palette and semantic Material 3-style `--md-sys-*` surface/color roles, defined separately under `:root` and `.dark`. shadcn variables map to the semantic roles, while breeze teal, ember, and gold retain their product meanings.
+- Surfaces use tonal separation, 8-12px radii, subtle borders, and no resting shadows. `.status-panel` uses a functional colored left border (`open` = breeze teal, `maybe` = gold, `closed` = ember) rather than an aurora or glow.
+- `ThermalGauge` remains the signature instrument, but it is a flat threshold track with always-visible labels for outside temperature, the opening threshold, and forecast low. Do not move essential meaning back into hover-only tooltips.
+- Chart/room accent colors are plain hex constants near the top of `src/routes/index.tsx` because Recharts needs literal color strings. If the palette changes, update both the CSS tokens and those constants together.
 - Theme follows the OS/browser color-scheme only — there is no manual light/dark toggle in the UI (a `ThemeToggle` component existed briefly but was removed by request; do not re-add a manual toggle without checking first). An inline anti-flash script (`themeInitScript` in `src/routes/__root.tsx`) sets the `dark`/`light` class on `<html>` from `prefers-color-scheme` before hydration, and keeps a live `matchMedia` listener so the class updates immediately if the system theme changes while the tab is open.
 - `src/components/Header.tsx`, `src/components/Footer.tsx`, and `src/routes/about.tsx` are leftover scaffold demo files, not wired into `__root.tsx` and not part of the product surface; they reference CSS variables (`--sea-ink`, `--page-wrap`, etc.) that no longer exist. They were intentionally left as-is (dead/unused) rather than restyled, since `/about` is not linked from the dashboard.
-- Motion respects `prefers-reduced-motion` (aurora drift, gauge marker pulse, and card entrance animations are disabled) via a media query at the bottom of `src/styles.css`.
+- Motion is limited to short color transitions and respects `prefers-reduced-motion` via a media query at the bottom of `src/styles.css`.
 
 ## Environment
 
@@ -121,6 +122,7 @@ Environment variables:
 - `REBOUND_FACTOR`, default `0.7`. Multiplies positive `massTemp - indoorTemp` to estimate post-close rebound.
 - `PREDICTION_HORIZON_MINUTES`, default `90`. Horizon for comparing open-window vs closed-window room predictions.
 - `MIN_PREDICTED_OPEN_BENEFIT_C`, default `0.3`. Minimum predicted open-vs-closed improvement before the app treats opening as meaningfully useful.
+- `MIN_FORECAST_COOLING_WINDOW_MINUTES`, default `30`. Minimum continuous forecast interval below the useful-cooling threshold before the app recommends opening later.
 - `TARGET_MAX_C`, default `22.5`. Settled-temperature target used for close-soon recommendations.
 - `PORT`, used by the production Start server
 - `VITE_CLERK_PUBLISHABLE_KEY`, Clerk public browser key. Required on Railway for the browser sign-in UI.
@@ -140,7 +142,8 @@ Environment variables:
 - The route can render a sign-in prompt publicly, but `getDashboardData` enforces authentication and a verified Google OAuth account matching `AUTHORIZED_EMAIL` before importing the private temperature server module.
 - Server functions dynamically import `src/window-watcher/server.ts`, which is marked `@tanstack/react-start/server-only`.
 - `server.ts` owns tado token refresh, Bright Sky DWD observation reads, Bright Sky/DWD forecast reads, rebound-aware recommendation logic, and JSONL history persistence.
-- Recommendations use per-room thermal-mass estimates from a slow EMA, expected rebound, observed cooling-rate/open-offset history, and 60-120 minute open-vs-closed predictions instead of only a fixed indoor/outdoor temperature gap.
+- Recommendations use per-room thermal-mass estimates from a slow EMA, expected rebound, observed cooling-rate/open-offset history, and 60-120 minute open-vs-closed predictions instead of only a fixed indoor/outdoor temperature gap. The open-window model uses a time-weighted outdoor forecast across the horizon; it must not treat the final forecast point as representative of the full window.
+- A future "open later" recommendation requires a continuous forecast opportunity of at least `MIN_FORECAST_COOLING_WINDOW_MINUTES`; a single qualifying point at the forecast boundary is insufficient.
 - The production web service can run in Railway Serverless/App Sleeping mode with `BACKGROUND_SAMPLER=false`. In that mode, fresh samples are taken on dashboard requests instead of an always-on interval.
 - `POST /api/sample` records one fresh sample for Railway cron. It requires `Authorization: Bearer $SAMPLE_TRIGGER_TOKEN` and must not be exposed without that secret.
 - If tado is rate-limited or throws after weather was fetched, the sampler records an outside-only history row with `rooms: []`. These rows keep outdoor history complete for charts and trend analysis, but must not be treated as the current room dashboard status.
@@ -154,6 +157,7 @@ Environment variables:
 
 ## Known Gotchas
 
+- Pnpm 11 reads `onlyBuiltDependencies` from `pnpm-workspace.yaml`, not the legacy `pnpm` field in `package.json`. Use Corepack or the pinned package-manager version so installs do not fall back to an incompatible pnpm 10 store.
 - The production launcher `scripts/start-railway.mjs` imports the built server-only chunk and starts the background sampler before starting Nitro. The sampler defaults to ten minutes on Railway and one minute locally.
 - The Railway web service defaults the in-process background sampler off unless `BACKGROUND_SAMPLER=true` is explicitly set. Keep production sampling owned by the separate Railway cron sampler service; if the web service starts logging `[window-watcher:cron]`, check `BACKGROUND_SAMPLER` first.
 - `pnpm dev` uses the standard TanStack Start Vite dev server. The explicit `nitro/vite` plugin is loaded only for `vite build`; loading it during `vite dev` caused Nitro's dev worker to fail with `Vite environment "ssr" is unavailable` on this dependency set.
@@ -171,6 +175,7 @@ Run:
 
 ```bash
 pnpm run check
+pnpm run typecheck
 pnpm run build
 NODE_ENV=production PORT=3000 pnpm start
 ```
