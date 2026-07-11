@@ -153,13 +153,14 @@ Environment variables:
 - Production builds run `scripts/write-app-version.mjs` before `vite build`, generating ignored `public/app-version.json`. The client polls this file in production and reloads automatically when the version changes so installed PWA sessions pick up new deployments.
 - The Railway web service `Window watcher` is explicitly connected to GitHub source `heddendorp/window-watcher` on branch `main`; pushes to `main` should create a Railway deployment automatically. If it stops working, re-run `railway service source connect --repo heddendorp/window-watcher --branch main --service "Window watcher" --environment production --json`.
 - The Railway GitHub source connection was re-applied on 2026-07-01 after CLI-only deploys were not following `main` pushes.
-- `.github/workflows/deploy-railway.yml` is a GitHub Actions fallback for push-to-main deploys. It requires a repository secret named `RAILWAY_TOKEN` containing a Railway project token for the production environment; without that secret the workflow skips deployment with a notice.
+- `.github/workflows/deploy-railway.yml` is the durable push-to-main deployment path. The repository secret `RAILWAY_TOKEN` contains a project token scoped to this project's production environment. The workflow fails if that secret is absent, waits for Railway to finish, and verifies that production `/app-version.json` matches the triggering GitHub SHA before succeeding.
 
 ## Known Gotchas
 
 - Pnpm 11 reads `onlyBuiltDependencies` from `pnpm-workspace.yaml`, not the legacy `pnpm` field in `package.json`. Use Corepack or the pinned package-manager version so installs do not fall back to an incompatible pnpm 10 store.
 - The production launcher `scripts/start-railway.mjs` imports the built server-only chunk and starts the background sampler before starting Nitro. The sampler defaults to ten minutes on Railway and one minute locally.
 - The Railway web service defaults the in-process background sampler off unless `BACKGROUND_SAMPLER=true` is explicitly set. Keep production sampling owned by the separate Railway cron sampler service; if the web service starts logging `[window-watcher:cron]`, check `BACKGROUND_SAMPLER` first.
+- Railway's native GitHub source trigger has intermittently missed `main` pushes even while the source appears connected. Keep the GitHub Actions deployment workflow and its production-version verification working; do not rely on the native trigger as the only deployment path.
 - `pnpm dev` uses the standard TanStack Start Vite dev server. The explicit `nitro/vite` plugin is loaded only for `vite build`; loading it during `vite dev` caused Nitro's dev worker to fail with `Vite environment "ssr" is unavailable` on this dependency set.
 - The previous launchd plist was intentionally not carried over; the old implementation is preserved in the backup repo.
 - Railway deploys the web process from `nixpacks.toml`. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH`; otherwise token/history persistence will be container-local.

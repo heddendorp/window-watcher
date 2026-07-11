@@ -10,6 +10,9 @@ concurrency:
   group: railway-production
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -18,32 +21,45 @@ jobs:
       RAILWAY_PROJECT_ID: f584dbe5-aff5-4282-b423-0e7a874e9028
       RAILWAY_SERVICE_ID: 42cf18f5-12d3-4e81-93f1-a15a9f2bc408
       RAILWAY_ENVIRONMENT: production
+      APP_VERSION_URL: https://window-watcher-production.up.railway.app/app-version.json
     steps:
       - name: Check Railway token
-        if: ${{ env.RAILWAY_TOKEN == '' }}
         run: |
-          echo "::notice::Set the RAILWAY_TOKEN repository secret to enable GitHub Actions deployments."
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN is required for production deployments."
+            exit 1
+          fi
 
       - name: Checkout
-        if: ${{ env.RAILWAY_TOKEN != '' }}
         uses: actions/checkout@v7
 
       - name: Set up Node
-        if: ${{ env.RAILWAY_TOKEN != '' }}
         uses: actions/setup-node@v6
         with:
           node-version: 24
 
       - name: Install Railway CLI
-        if: ${{ env.RAILWAY_TOKEN != '' }}
         run: npm install --global @railway/cli@5.26.0
 
       - name: Deploy to Railway
-        if: ${{ env.RAILWAY_TOKEN != '' }}
         run: |
           railway up \
             --project "$RAILWAY_PROJECT_ID" \
             --environment "$RAILWAY_ENVIRONMENT" \
             --service "$RAILWAY_SERVICE_ID" \
-            --detach \
+            --ci \
             -m "github actions deploy $GITHUB_SHA"
+
+      - name: Verify production commit
+        run: |
+          for attempt in {1..12}; do
+            deployed_version="$(curl -fsS "$APP_VERSION_URL" | jq -r '.version // empty' || true)"
+            if [ "$deployed_version" = "$GITHUB_SHA" ]; then
+              echo "Production is serving $GITHUB_SHA"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "::error::Production did not serve $GITHUB_SHA within 60 seconds."
+          exit 1
