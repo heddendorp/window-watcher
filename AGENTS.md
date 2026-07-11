@@ -134,6 +134,7 @@ Environment variables:
 - `TADO_TOKEN_FILE`, optional explicit tado token file path
 - `RAILWAY_VOLUME_MOUNT_PATH`, used as the default durable base path on Railway when present
 - `TADO_TOKEN_JSON`, optional secret bootstrap for Railway first boot when no token file exists yet
+- `WINDOW_WATCHER_BUILD_SHA`, deployment metadata set by the GitHub Actions workflow before CLI uploads. `scripts/write-app-version.mjs` uses it when Railway does not supply `RAILWAY_GIT_COMMIT_SHA`; do not manage it manually.
 
 ## Architecture
 
@@ -153,7 +154,7 @@ Environment variables:
 - Production builds run `scripts/write-app-version.mjs` before `vite build`, generating ignored `public/app-version.json`. The client polls this file in production and reloads automatically when the version changes so installed PWA sessions pick up new deployments.
 - The Railway web service `Window watcher` is explicitly connected to GitHub source `heddendorp/window-watcher` on branch `main`; pushes to `main` should create a Railway deployment automatically. If it stops working, re-run `railway service source connect --repo heddendorp/window-watcher --branch main --service "Window watcher" --environment production --json`.
 - The Railway GitHub source connection was re-applied on 2026-07-01 after CLI-only deploys were not following `main` pushes.
-- `.github/workflows/deploy-railway.yml` is the durable push-to-main deployment path. The repository secret `RAILWAY_TOKEN` contains a project token scoped to this project's production environment. The workflow fails if that secret is absent, waits for Railway to finish, and verifies that production `/app-version.json` matches the triggering GitHub SHA before succeeding.
+- `.github/workflows/deploy-railway.yml` is the durable push-to-main deployment path. The repository secret `RAILWAY_TOKEN` contains a project token scoped to this project's production environment. The workflow fails if that secret is absent, writes `WINDOW_WATCHER_BUILD_SHA` without triggering an extra deploy, waits for Railway to finish, and verifies that production `/app-version.json` matches the triggering GitHub SHA before succeeding.
 
 ## Known Gotchas
 

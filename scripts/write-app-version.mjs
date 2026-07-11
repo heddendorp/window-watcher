@@ -20,6 +20,7 @@ function readGitCommit() {
 
 const version =
 	process.env.RAILWAY_GIT_COMMIT_SHA ||
+	process.env.WINDOW_WATCHER_BUILD_SHA ||
 	process.env.GITHUB_SHA ||
 	readGitCommit() ||
 	builtAt;

@@ -41,6 +41,15 @@ jobs:
       - name: Install Railway CLI
         run: npm install --global @railway/cli@5.26.0
 
+      - name: Set deployment version
+        run: |
+          railway variable set \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" \
+            --service "$RAILWAY_SERVICE_ID" \
+            --skip-deploys \
+            "WINDOW_WATCHER_BUILD_SHA=$GITHUB_SHA"
+
       - name: Deploy to Railway
         run: |
           railway up \
