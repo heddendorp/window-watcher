@@ -1,12 +1,12 @@
 import { SignInButton, UserButton, useUser } from "@clerk/tanstack-react-start";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
+	Area,
 	CartesianGrid,
 	ComposedChart,
 	Line,
-	LineChart,
 	Tooltip as RechartsTooltip,
 	ReferenceLine,
 	ResponsiveContainer,
@@ -38,6 +38,7 @@ import {
 	pollTadoReconnect,
 	startTadoReconnect,
 } from "../window-watcher/functions";
+import { getSparklineAreaStops } from "../window-watcher/sparkline";
 import type {
 	DashboardData,
 	RoomReading,
@@ -1101,6 +1102,8 @@ function Sparkline({
 }: {
 	points: Array<{ time: number; value: number }>;
 }) {
+	const gradientId = `sparkline-area-${useId().replaceAll(":", "")}`;
+
 	if (points.length < 2) return null;
 
 	const min = Math.min(...points.map((point) => point.value));
@@ -1108,6 +1111,7 @@ function Sparkline({
 	const padding = Math.max(0.15, (max - min) * 0.2);
 	const domain = [min - padding, max + padding];
 	const changeC = (points.at(-1)?.value ?? points[0].value) - points[0].value;
+	const areaStops = getSparklineAreaStops(points);
 
 	return (
 		<div
@@ -1116,11 +1120,23 @@ function Sparkline({
 			role="img"
 		>
 			<ResponsiveContainer height="100%" width="100%">
-				<LineChart
+				<ComposedChart
 					accessibilityLayer={false}
 					data={points}
 					margin={{ top: 4, right: 0, bottom: 0, left: 0 }}
 				>
+					<defs>
+						<linearGradient id={gradientId} x1="0%" x2="100%" y1="0%" y2="0%">
+							{areaStops.map((stop) => (
+								<stop
+									key={stop.key}
+									offset={`${stop.offset}%`}
+									stopColor={stop.color}
+									stopOpacity={stop.opacity}
+								/>
+							))}
+						</linearGradient>
+					</defs>
 					<XAxis
 						dataKey="time"
 						domain={["dataMin", "dataMax"]}
@@ -1133,6 +1149,14 @@ function Sparkline({
 						cursor={{ stroke: "var(--ww-ink-faint)", strokeWidth: 1 }}
 						isAnimationActive={false}
 					/>
+					<Area
+						baseValue={domain[0]}
+						dataKey="value"
+						fill={`url(#${gradientId})`}
+						isAnimationActive={false}
+						stroke="none"
+						type={sparklineCurveType}
+					/>
 					<Line
 						activeDot={{ r: 3, strokeWidth: 1 }}
 						dataKey="value"
@@ -1143,7 +1167,7 @@ function Sparkline({
 						strokeWidth={3}
 						type={sparklineCurveType}
 					/>
-				</LineChart>
+				</ComposedChart>
 			</ResponsiveContainer>
 		</div>
 	);
