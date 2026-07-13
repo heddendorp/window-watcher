@@ -243,6 +243,10 @@ button {
   --verdict-color: var(--ww-ember);
 }
 
+.status-panel.unknown {
+  --verdict-color: var(--md-sys-color-on-surface-variant);
+}
+
 .status-panel .verdict-title {
   color: var(--verdict-color);
 }

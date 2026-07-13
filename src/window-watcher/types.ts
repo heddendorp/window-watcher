@@ -1,6 +1,6 @@
 export type TrendDirection = "falling" | "steady" | "rising";
 
-export type VerdictAction = "open" | "maybe" | "closed";
+export type VerdictAction = "open" | "maybe" | "closed" | "unknown";
 
 export type RoomReading = {
 	zoneId: number | string;
@@ -8,7 +8,7 @@ export type RoomReading = {
 	type?: string;
 	temperatureC: number;
 	humidityPercent?: number;
-	differenceC: number;
+	differenceC?: number;
 	prediction?: {
 		horizonMinutes: number;
 		massTemperatureC: number;
@@ -54,6 +54,7 @@ export type TemperatureHistoryEntry = {
 		temperatureC?: number;
 		humidityPercent?: number;
 		observedAt?: string;
+		unavailableReason?: string;
 		source?: {
 			name: string;
 			stationName?: string;
@@ -99,9 +100,10 @@ export type CoolingStatus = {
 	};
 	rooms: Array<RoomReading>;
 	outside: {
-		temperatureC: number;
+		temperatureC?: number;
 		humidityPercent?: number;
 		observedAt?: string;
+		unavailableReason?: string;
 		source?: {
 			name: string;
 			stationName?: string;
@@ -148,8 +150,8 @@ export type CoolingStatus = {
 			coolingWindowEndsAt?: string;
 		};
 		strategy: string;
-		thresholdC: number;
-		marginToThresholdC: number;
+		thresholdC?: number;
+		marginToThresholdC?: number;
 	};
 	verdict: {
 		action: VerdictAction;

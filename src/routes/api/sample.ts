@@ -37,7 +37,7 @@ export const Route = createFileRoute("/api/sample")({
 					ok: true,
 					skipped: false,
 					checkedAt: status.checkedAt,
-					outsideC: status.outside.temperatureC,
+					outsideC: status.outside.temperatureC ?? null,
 					roomCount: status.rooms.length,
 				});
 			},

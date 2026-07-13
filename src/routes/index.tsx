@@ -306,6 +306,8 @@ function Dashboard({
 	setRangeMode: (mode: RangeMode) => void;
 }) {
 	const { status, history } = data;
+	const currentOutsideC = status.outside.temperatureC;
+	const hasCurrentOutside = currentOutsideC != null;
 	const [activeChartLineKey, setActiveChartLineKey] = useState<string | null>(
 		null,
 	);
@@ -384,8 +386,13 @@ function Dashboard({
 						<div className="text-right">
 							<p className="data-label">Outside now</p>
 							<p className="mono-num mt-1 text-3xl font-semibold text-[var(--ww-ink)] sm:text-4xl">
-								{formatTemp(status.outside.temperatureC)}
+								{formatTemp(currentOutsideC)}
 							</p>
+							{hasCurrentOutside ? null : (
+								<p className="mt-1 text-xs font-semibold text-[var(--ww-ink-faint)]">
+									Unavailable
+								</p>
+							)}
 						</div>
 					</div>
 
@@ -398,19 +405,22 @@ function Dashboard({
 						</p>
 					</div>
 
-					<ThermalGauge
-						forecastMinC={
-							status.recommendation.forecast?.minTemperatureC ?? null
-						}
-						outsideC={status.outside.temperatureC}
-						referenceRoomName={
-							recommendationPrediction?.referenceZoneName ??
-							status.tado.referenceZoneName ??
-							"the reference room"
-						}
-						horizonMinutes={recommendationPrediction?.horizonMinutes}
-						thresholdC={status.recommendation.thresholdC}
-					/>
+					{currentOutsideC != null &&
+					status.recommendation.thresholdC != null ? (
+						<ThermalGauge
+							forecastMinC={
+								status.recommendation.forecast?.minTemperatureC ?? null
+							}
+							outsideC={currentOutsideC}
+							referenceRoomName={
+								recommendationPrediction?.referenceZoneName ??
+								status.tado.referenceZoneName ??
+								"the reference room"
+							}
+							horizonMinutes={recommendationPrediction?.horizonMinutes}
+							thresholdC={status.recommendation.thresholdC}
+						/>
+					) : null}
 
 					<div className="data-grid">
 						<div className="data-cell">
@@ -1046,7 +1056,10 @@ function RoomCard({
 					<HourlyTrendBadge trend={hourlyTrend} />
 				</div>
 				<p className="mt-1 text-sm text-[var(--ww-ink-soft)]">
-					{room.verdict.title} · {formatRoomOutsideComparison(room.differenceC)}
+					{room.verdict.title}
+					{room.differenceC == null
+						? ""
+						: ` · ${formatRoomOutsideComparison(room.differenceC)}`}
 					{room.humidityPercent == null
 						? ""
 						: ` · ${room.humidityPercent.toFixed(0)}% humidity`}

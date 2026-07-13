@@ -9,6 +9,7 @@ import {
 	getForecastTemperatureAt,
 	getTimeWeightedForecastTemperature,
 } from "./forecast-model";
+import { sanitizeTemperatureHistoryEntry } from "./history-model";
 import type {
 	CoolingStatus,
 	RoomReading,
@@ -18,7 +19,7 @@ import type {
 import {
 	type BrightSkyCurrentWeatherResponse,
 	type BrightSkyHourlyWeatherResponse,
-	selectBrightSkyObservation,
+	selectBrightSkyCurrentObservation,
 	type WeatherSource,
 } from "./weather-model";
 
@@ -156,6 +157,7 @@ type ModeledRoom = TadoRoom & {
 };
 
 type OutsideWeather = {
+	currentUnavailableReason?: string;
 	current?: {
 		temperatureC?: number;
 		humidityPercent?: number;
@@ -558,7 +560,12 @@ async function fetchOutsideWeather() {
 	}
 
 	if (outsideWeatherCache && nowMs < weatherRateLimitUntil) {
-		return outsideWeatherCache.data;
+		return {
+			...outsideWeatherCache.data,
+			current: undefined,
+			currentUnavailableReason:
+				"Bright Sky is temporarily rate limited and did not provide a current outdoor observation.",
+		};
 	}
 
 	const now = new Date();
@@ -599,25 +606,16 @@ async function fetchOutsideWeather() {
 		weatherRateLimitUntil = nowMs + config.weatherRateLimitBackoffMs;
 	}
 
-	const observation = selectBrightSkyObservation(current, forecast, nowMs);
-	if (!observation) {
-		if (
-			outsideWeatherCache &&
-			failures.some((error) => isHttpError(error, 429))
-		) {
-			return outsideWeatherCache.data;
-		}
-
-		throw (
-			failures[0] ||
-			new Error("Could not read a current Bright Sky observation.")
-		);
-	}
-
-	if (currentResult.status === "rejected" && observation.usedHourlyFallback) {
+	const observation = selectBrightSkyCurrentObservation(current);
+	if (currentResult.status === "rejected") {
 		logWeatherFallback(
-			"current-observation-fallback",
-			`Current weather unavailable (${errorMessage(currentResult.reason)}); using the latest hourly observation.`,
+			"current-observation-unavailable",
+			`Current weather unavailable (${errorMessage(currentResult.reason)}); reporting no current outdoor value.`,
+		);
+	} else if (!observation) {
+		logWeatherFallback(
+			"current-observation-empty",
+			"Current weather response had no temperature; reporting no current outdoor value.",
 		);
 	}
 	if (forecastResult.status === "rejected") {
@@ -637,17 +635,20 @@ async function fetchOutsideWeather() {
 		);
 
 	const outsideWeather = {
-		current: {
-			temperatureC: observation.temperatureC,
-			humidityPercent: observation.humidityPercent,
-			observedAt: observation.observedAt,
-			source: describeWeatherSource(
-				observation.usedHourlyFallback
-					? "Bright Sky DWD hourly observation"
-					: "Bright Sky DWD observation",
-				observation.source,
-			),
-		},
+		currentUnavailableReason: observation
+			? undefined
+			: "Bright Sky did not provide a current outdoor observation.",
+		current: observation
+			? {
+					temperatureC: observation.temperatureC,
+					humidityPercent: observation.humidityPercent,
+					observedAt: observation.observedAt,
+					source: describeWeatherSource(
+						"Bright Sky DWD observation",
+						observation.source,
+					),
+				}
+			: undefined,
 		forecast: forecast
 			? {
 					source: describeWeatherSource(
@@ -1608,7 +1609,8 @@ export async function readHistory(limit = 960) {
 		const lines = raw.trim().split("\n").filter(Boolean);
 		return lines
 			.slice(-limit)
-			.map((line) => JSON.parse(line) as TemperatureHistoryEntry);
+			.map((line) => JSON.parse(line) as TemperatureHistoryEntry)
+			.map(sanitizeTemperatureHistoryEntry);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
@@ -1620,11 +1622,52 @@ function buildStatusFromHistoryEntry(
 	error?: Error,
 	options: { stale?: boolean } = {},
 ) {
-	if (!entry?.outside?.temperatureC) return null;
-	if (!entry.rooms.length) return null;
+	if (!entry?.rooms.length) return null;
 
 	const stale = options.stale ?? Boolean(error);
-	const outsideC = entry.outside.temperatureC;
+	const entryOutside = entry.outside;
+	const outsideC = stale ? undefined : entryOutside?.temperatureC;
+	if (outsideC == null) {
+		const rooms = buildRoomsWithoutOutdoorComparison(
+			entry.rooms.map((room) => ({ ...room, type: "HEATING" })),
+		);
+		const coldestRoom = rooms.reduce((coldest, room) =>
+			room.temperatureC < coldest.temperatureC ? room : coldest,
+		);
+		const unavailableReason = stale
+			? "Fresh temperature data is unavailable."
+			: entryOutside?.unavailableReason ||
+				"Bright Sky did not provide a current outdoor observation.";
+
+		return {
+			checkedAt: stale ? new Date().toISOString() : entry.checkedAt,
+			lastFreshAt: entry.checkedAt,
+			stale,
+			staleReason: stale ? error?.message : undefined,
+			location: entry.location || {
+				label: config.locationLabel,
+				latitude: config.latitude,
+				longitude: config.longitude,
+			},
+			tado: {
+				homeId: entry.tado?.homeId,
+				roomCount: rooms.length,
+				referenceZoneId: coldestRoom.zoneId,
+				referenceZoneName: coldestRoom.zoneName,
+				referenceStrategy: "outside-unavailable",
+			},
+			inside: {
+				temperatureC: coldestRoom.temperatureC,
+				humidityPercent: coldestRoom.humidityPercent,
+			},
+			rooms,
+			outside: { unavailableReason },
+			recommendation: buildUnavailableRecommendation(),
+			verdict: buildUnavailableVerdict(unavailableReason),
+			marginC: entry.marginC || config.coolingMarginC,
+		} satisfies CoolingStatus;
+	}
+
 	const rooms = entry.rooms.map((room) => ({
 		...room,
 		type: "HEATING",
@@ -1659,9 +1702,9 @@ function buildStatusFromHistoryEntry(
 		rooms: rooms as Array<RoomReading>,
 		outside: {
 			temperatureC: outsideC,
-			humidityPercent: entry.outside.humidityPercent,
-			observedAt: entry.outside.observedAt,
-			source: entry.outside.source,
+			humidityPercent: entryOutside?.humidityPercent,
+			observedAt: entryOutside?.observedAt,
+			source: entryOutside?.source,
 		},
 		recommendation: entry.recommendation || {
 			outdoorTrend: {
@@ -1680,70 +1723,54 @@ function buildStatusFromHistoryEntry(
 	} satisfies CoolingStatus;
 }
 
-function buildOutsideWeatherFromHistoryEntry(
-	entry: TemperatureHistoryEntry | undefined,
+function buildRoomsWithoutOutdoorComparison(
+	rooms: Array<
+		Pick<
+			RoomReading,
+			"zoneId" | "zoneName" | "type" | "temperatureC" | "humidityPercent"
+		>
+	>,
 ) {
-	if (!entry?.outside?.temperatureC) return null;
-
-	const forecastPoints = (entry.recommendation?.forecast?.points || [])
-		.map((point) => ({
-			time: point.time,
-			timestamp: new Date(point.time).getTime(),
-			temperatureC: point.temperatureC,
-		}))
-		.filter(
-			(
-				point,
-			): point is {
-				time: string;
-				timestamp: number;
-				temperatureC: number;
-			} =>
-				Boolean(point.time) &&
-				Number.isFinite(point.timestamp) &&
-				Number.isFinite(point.temperatureC),
-		);
-
-	return {
-		current: {
-			temperatureC: entry.outside.temperatureC,
-			humidityPercent: entry.outside.humidityPercent,
-			observedAt: entry.outside.observedAt || entry.checkedAt,
-			source: entry.outside.source,
-		},
-		forecast: entry.recommendation?.forecast
-			? {
-					source: entry.recommendation.forecast.source,
-					points: forecastPoints,
-				}
-			: undefined,
-	} satisfies OutsideWeather;
+	return rooms.map(
+		(room): RoomReading => ({
+			...room,
+			differenceC: undefined,
+			prediction: undefined,
+			verdict: {
+				action: "unknown",
+				title: "Outdoor comparison unavailable",
+				detail: "There is no current outdoor temperature to compare with.",
+			},
+		}),
+	);
 }
 
-async function readOutsideWeatherWithFallback(
-	history: TemperatureHistoryEntry[],
-) {
-	try {
-		return await fetchOutsideWeather();
-	} catch (error) {
-		if (!isHttpError(error, 429)) throw error;
+function buildUnavailableRecommendation(): CoolingStatus["recommendation"] {
+	return {
+		outdoorTrend: {
+			direction: "steady",
+			changeC: 0,
+			hours: 0,
+			sampleCount: 0,
+		},
+		strategy: "outside-unavailable",
+	};
+}
 
-		const fallback = buildOutsideWeatherFromHistoryEntry(history.at(-1));
-		if (!fallback) throw error;
-
-		outsideWeatherCache = { createdAt: Date.now(), data: fallback };
-		return fallback;
-	}
+function buildUnavailableVerdict(reason: string): CoolingStatus["verdict"] {
+	return {
+		action: "unknown",
+		title: "Current outdoor temperature unavailable",
+		detail: `${reason} No window recommendation is shown.`,
+	};
 }
 
 async function collectFreshCoolingStatus() {
 	const previousHistory = await readHistory(
 		Math.ceil(Math.max(config.outdoorTrendHours, 24) * 60),
 	);
-	const outside = await readOutsideWeatherWithFallback(previousHistory);
+	const outside = await fetchOutsideWeather();
 	const outsideC = outside.current?.temperatureC;
-
-	if (outsideC == null) throw new Error("Could not read outside temperature.");
 
 	const checkedAt = new Date().toISOString();
 
@@ -1755,6 +1782,44 @@ async function collectFreshCoolingStatus() {
 			await appendOutsideHistory(outside, checkedAt, previousHistory);
 		}
 		throw error;
+	}
+
+	if (outsideC == null) {
+		const referenceRoom = target.rooms.reduce((coldest, room) =>
+			room.temperatureC < coldest.temperatureC ? room : coldest,
+		);
+		const rooms = buildRoomsWithoutOutdoorComparison(target.rooms);
+		const unavailableReason =
+			outside.currentUnavailableReason ||
+			"Bright Sky did not provide a current outdoor observation.";
+		const status: CoolingStatus = {
+			checkedAt,
+			location: {
+				label: config.locationLabel,
+				latitude: config.latitude,
+				longitude: config.longitude,
+			},
+			tado: {
+				homeId: target.homeId,
+				roomCount: rooms.length,
+				referenceZoneId: referenceRoom.zoneId,
+				referenceZoneName: referenceRoom.zoneName,
+				referenceStrategy: "outside-unavailable",
+			},
+			inside: {
+				temperatureC: referenceRoom.temperatureC,
+				humidityPercent: referenceRoom.humidityPercent,
+			},
+			rooms,
+			outside: { unavailableReason },
+			recommendation: buildUnavailableRecommendation(),
+			verdict: buildUnavailableVerdict(unavailableReason),
+			marginC: config.coolingMarginC,
+		};
+
+		await appendHistory(status);
+		statusCache = { createdAt: Date.now(), data: status };
+		return status;
 	}
 
 	const trend = analyzeOutdoorTrend(previousHistory, outsideC, checkedAt);
@@ -1838,7 +1903,6 @@ async function sampleCoolingStatus(reason = "interval") {
 		})
 		.catch(async (error: Error) => {
 			logSampleError(reason, error);
-			if (isHttpError(error, 429)) return null;
 
 			const history = await readHistory(1);
 			const fallback = buildStatusFromHistoryEntry(history.at(-1), error);
@@ -1900,9 +1964,10 @@ async function getCoolingStatus() {
 	const sampled = await sampleCoolingStatus("request");
 	if (sampled) return sampled;
 
-	const fallback = buildStatusFromHistoryEntry(latestFullHistory, undefined, {
-		stale: false,
-	});
+	const fallback = buildStatusFromHistoryEntry(
+		latestFullHistory,
+		new Error("Fresh temperature data is unavailable."),
+	);
 	if (!fallback) {
 		throw new Error("Could not read fresh temperatures and no history exists.");
 	}

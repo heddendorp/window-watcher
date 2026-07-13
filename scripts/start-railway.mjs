@@ -15,13 +15,14 @@ async function startSampler() {
 
 	const moduleUrl = pathToFileURL(path.join(ssrDir, serverChunk)).href;
 	const serverModule = await import(moduleUrl);
-	if (typeof serverModule.startBackgroundSampler === "function") {
-		serverModule.startBackgroundSampler();
+	const samplerModule = serverModule.server_exports || serverModule;
+	if (typeof samplerModule.startBackgroundSampler === "function") {
+		samplerModule.startBackgroundSampler();
 		return;
 	}
 
-	if (typeof serverModule.getDashboardPayload === "function") {
-		void serverModule.getDashboardPayload().catch((error) => {
+	if (typeof samplerModule.getDashboardPayload === "function") {
+		void samplerModule.getDashboardPayload().catch((error) => {
 			console.error(`[window-watcher:startup] ${error.message}`);
 		});
 		return;
