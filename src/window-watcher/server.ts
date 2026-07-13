@@ -615,22 +615,26 @@ async function fetchOutsideWeather() {
 	}
 
 	if (currentResult.status === "rejected" && observation.usedHourlyFallback) {
-		logWeatherWarning(
+		logWeatherFallback(
 			"current-observation-fallback",
 			`Current weather unavailable (${errorMessage(currentResult.reason)}); using the latest hourly observation.`,
 		);
 	}
 	if (forecastResult.status === "rejected") {
-		logWeatherWarning(
+		logWeatherFallback(
 			"forecast-unavailable",
 			`Forecast unavailable (${errorMessage(forecastResult.reason)}); continuing with the current observation.`,
 		);
 	}
 
-	const forecastSource = findWeatherSource(
-		forecast?.sources,
-		forecast?.weather?.find((point) => point.source_id != null)?.source_id,
-	);
+	const forecastSource =
+		forecast?.sources?.find(
+			(source) => source.observation_type === "forecast",
+		) ||
+		findWeatherSource(
+			forecast?.sources,
+			forecast?.weather?.find((point) => point.source_id != null)?.source_id,
+		);
 
 	const outsideWeather = {
 		current: {
@@ -701,19 +705,19 @@ function describeWeatherSource(
 	};
 }
 
-let lastWeatherWarning: { key: string; loggedAt: number } | null = null;
+let lastWeatherFallback: { key: string; loggedAt: number } | null = null;
 
-function logWeatherWarning(key: string, message: string) {
+function logWeatherFallback(key: string, message: string) {
 	const now = Date.now();
 	if (
-		lastWeatherWarning?.key === key &&
-		now - lastWeatherWarning.loggedAt < 10 * 60 * 1000
+		lastWeatherFallback?.key === key &&
+		now - lastWeatherFallback.loggedAt < 10 * 60 * 1000
 	) {
 		return;
 	}
 
-	lastWeatherWarning = { key, loggedAt: now };
-	console.warn(`[window-watcher:weather] ${message}`);
+	lastWeatherFallback = { key, loggedAt: now };
+	console.log(`[window-watcher:weather] ${message}`);
 }
 
 function errorMessage(error: unknown) {
