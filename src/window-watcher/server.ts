@@ -5,6 +5,13 @@ import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+	type DwdConsensus,
+	type DwdStation,
+	parseDwdPoiObservation,
+	parseDwdStationList,
+	selectDwdConsensus,
+} from "./dwd-model";
+import {
 	findSustainedThresholdWindow,
 	getForecastTemperatureAt,
 	getTimeWeightedForecastTemperature,
@@ -39,6 +46,15 @@ const DEFAULT_SAMPLE_INTERVAL_MS = process.env.RAILWAY_ENVIRONMENT_ID
 	: 60 * 1000;
 const DEFAULT_WEATHER_CACHE_MS = 4 * 60 * 1000;
 const DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
+const DEFAULT_DWD_OBSERVATION_MAX_AGE_MS = 90 * 60 * 1000;
+const DEFAULT_DWD_MINIMUM_STATIONS = 2;
+const DEFAULT_DWD_MAXIMUM_SPREAD_C = 3;
+const DWD_STATION_CANDIDATE_COUNT = 6;
+const DWD_STATION_LIST_CACHE_MS = 24 * 60 * 60 * 1000;
+const DWD_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const DWD_STATION_LIST_URL =
+	"https://opendata.dwd.de/weather/weather_reports/stationlist_synoptic_germany.csv";
+const DWD_POI_BASE_URL = "https://opendata.dwd.de/weather/weather_reports/poi";
 const DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
 const TADO_TOPOLOGY_CACHE_MS = 60 * 60 * 1000;
 const DEFAULT_THERMAL_MASS_TAU_HOURS = 8;
@@ -86,6 +102,27 @@ const config = {
 		process.env.WEATHER_RATE_LIMIT_BACKOFF_MS ||
 			DEFAULT_WEATHER_RATE_LIMIT_BACKOFF_MS,
 	),
+	dwdObservationMaxAgeMs: Math.min(
+		2 * 60 * 60 * 1000,
+		Math.max(
+			30 * 60 * 1000,
+			Number(process.env.DWD_OBSERVATION_MAX_AGE_MS) ||
+				DEFAULT_DWD_OBSERVATION_MAX_AGE_MS,
+		),
+	),
+	dwdMinimumStations: Math.max(
+		2,
+		Math.floor(
+			Number(process.env.DWD_MINIMUM_STATIONS) || DEFAULT_DWD_MINIMUM_STATIONS,
+		),
+	),
+	dwdMaximumSpreadC: Math.min(
+		5,
+		Math.max(
+			0.5,
+			Number(process.env.DWD_MAXIMUM_SPREAD_C) || DEFAULT_DWD_MAXIMUM_SPREAD_C,
+		),
+	),
 	tadoRateLimitBackoffMs: Number(
 		process.env.TADO_RATE_LIMIT_BACKOFF_MS ||
 			DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS,
@@ -116,6 +153,12 @@ let samplerStarted = false;
 let lastSampleError: { key: string; loggedAt: number } | null = null;
 let outsideWeatherCache: { createdAt: number; data: OutsideWeather } | null =
 	null;
+let dwdStationCache: { createdAt: number; stations: Array<DwdStation> } | null =
+	null;
+let dwdObservationCache: {
+	createdAt: number;
+	consensus?: DwdConsensus;
+} | null = null;
 let weatherRateLimitUntil = 0;
 let tadoRateLimitUntil = 0;
 let tadoTopologyCache: {
@@ -255,6 +298,33 @@ async function requestJson<T>(
 	}
 
 	return data as T;
+}
+
+async function requestText(url: string, errorContext: string) {
+	const response = await fetch(url, {
+		redirect: "error",
+		signal: AbortSignal.timeout(config.requestTimeoutMs),
+	});
+	if (!response.ok) {
+		throw Object.assign(
+			new Error(`${errorContext} failed with ${response.status}`),
+			{ status: response.status, provider: errorContext },
+		);
+	}
+
+	const contentLength = Number(response.headers.get("content-length"));
+	if (
+		Number.isFinite(contentLength) &&
+		contentLength > DWD_MAX_RESPONSE_BYTES
+	) {
+		throw new Error(`${errorContext} response was unexpectedly large.`);
+	}
+
+	const text = await response.text();
+	if (Buffer.byteLength(text, "utf8") > DWD_MAX_RESPONSE_BYTES) {
+		throw new Error(`${errorContext} response was unexpectedly large.`);
+	}
+	return text;
 }
 
 function assertLocalTadoReconnectAllowed() {
@@ -550,6 +620,100 @@ async function readTadoRoomsWithRateLimitBackoff() {
 	}
 }
 
+async function fetchDwdStations() {
+	const nowMs = Date.now();
+	if (
+		dwdStationCache &&
+		nowMs - dwdStationCache.createdAt < DWD_STATION_LIST_CACHE_MS
+	) {
+		return dwdStationCache.stations;
+	}
+
+	const stationList = await requestText(
+		DWD_STATION_LIST_URL,
+		"DWD station list",
+	);
+	const stations = parseDwdStationList(stationList, {
+		latitude: config.latitude,
+		longitude: config.longitude,
+	}).slice(0, DWD_STATION_CANDIDATE_COUNT);
+	if (!stations.length) {
+		throw new Error("DWD station list had no usable nearby stations.");
+	}
+
+	dwdStationCache = { createdAt: nowMs, stations };
+	return stations;
+}
+
+async function fetchDwdCurrentConsensus(nowMs: number) {
+	if (
+		dwdObservationCache &&
+		nowMs - dwdObservationCache.createdAt < config.weatherCacheMs
+	) {
+		return dwdObservationCache.consensus;
+	}
+
+	try {
+		const stations = await fetchDwdStations();
+		const results = await Promise.allSettled(
+			stations.map(async (station) => {
+				const response = await requestText(
+					`${DWD_POI_BASE_URL}/${station.fileCode}-BEOB.csv`,
+					`DWD observation for ${station.name}`,
+				);
+				return parseDwdPoiObservation(response, station, {
+					nowMs,
+					maxAgeMs: config.dwdObservationMaxAgeMs,
+				});
+			}),
+		);
+		const observations = results
+			.filter(
+				(
+					result,
+				): result is PromiseFulfilledResult<
+					NonNullable<Awaited<ReturnType<typeof parseDwdPoiObservation>>>
+				> => result.status === "fulfilled" && result.value != null,
+			)
+			.map((result) => result.value);
+		const consensus = selectDwdConsensus(observations, {
+			minimumStations: config.dwdMinimumStations,
+			maximumSpreadC: config.dwdMaximumSpreadC,
+		});
+
+		dwdObservationCache = { createdAt: nowMs, consensus };
+		if (!consensus) {
+			logWeatherFallback(
+				"dwd-consensus-unavailable",
+				`Direct DWD fallback had ${observations.length} fresh nearby observation(s), but ${config.dwdMinimumStations} agreeing stations are required.`,
+			);
+		}
+		return consensus;
+	} catch (error) {
+		dwdObservationCache = { createdAt: nowMs };
+		logWeatherFallback(
+			"dwd-fallback-failed",
+			`Direct DWD fallback failed (${errorMessage(error)}).`,
+		);
+		return undefined;
+	}
+}
+
+function currentWeatherFromDwdConsensus(consensus: DwdConsensus) {
+	return {
+		temperatureC: consensus.temperatureC,
+		humidityPercent: consensus.humidityPercent,
+		observedAt: consensus.observedAt,
+		source: {
+			name: "DWD Open Data station consensus",
+			stationName: consensus.stations
+				.map((station) => station.name)
+				.join(" + "),
+			distanceMeters: consensus.stations[0]?.distanceMeters,
+		},
+	};
+}
+
 async function fetchOutsideWeather() {
 	const nowMs = Date.now();
 	if (
@@ -560,11 +724,15 @@ async function fetchOutsideWeather() {
 	}
 
 	if (outsideWeatherCache && nowMs < weatherRateLimitUntil) {
+		const dwdConsensus = await fetchDwdCurrentConsensus(nowMs);
 		return {
 			...outsideWeatherCache.data,
-			current: undefined,
-			currentUnavailableReason:
-				"Bright Sky is temporarily rate limited and did not provide a current outdoor observation.",
+			current: dwdConsensus
+				? currentWeatherFromDwdConsensus(dwdConsensus)
+				: undefined,
+			currentUnavailableReason: dwdConsensus
+				? undefined
+				: "Bright Sky is temporarily rate limited, and direct DWD observations were not fresh enough to provide a current outdoor value.",
 		};
 	}
 
@@ -607,15 +775,24 @@ async function fetchOutsideWeather() {
 	}
 
 	const observation = selectBrightSkyCurrentObservation(current);
+	const dwdConsensus = observation
+		? undefined
+		: await fetchDwdCurrentConsensus(nowMs);
 	if (currentResult.status === "rejected") {
 		logWeatherFallback(
 			"current-observation-unavailable",
-			`Current weather unavailable (${errorMessage(currentResult.reason)}); reporting no current outdoor value.`,
+			`Bright Sky current weather unavailable (${errorMessage(currentResult.reason)}); checking direct DWD observations.`,
 		);
 	} else if (!observation) {
 		logWeatherFallback(
 			"current-observation-empty",
-			"Current weather response had no temperature; reporting no current outdoor value.",
+			"Bright Sky current weather had no temperature; checking direct DWD observations.",
+		);
+	}
+	if (dwdConsensus) {
+		logWeatherFallback(
+			"dwd-fallback-active",
+			`Using fresh direct DWD consensus from ${dwdConsensus.stations.length} nearby stations.`,
 		);
 	}
 	if (forecastResult.status === "rejected") {
@@ -635,9 +812,10 @@ async function fetchOutsideWeather() {
 		);
 
 	const outsideWeather = {
-		currentUnavailableReason: observation
-			? undefined
-			: "Bright Sky did not provide a current outdoor observation.",
+		currentUnavailableReason:
+			observation || dwdConsensus
+				? undefined
+				: "Neither Bright Sky nor enough fresh, agreeing direct DWD observations provided a current outdoor value.",
 		current: observation
 			? {
 					temperatureC: observation.temperatureC,
@@ -648,7 +826,9 @@ async function fetchOutsideWeather() {
 						observation.source,
 					),
 				}
-			: undefined,
+			: dwdConsensus
+				? currentWeatherFromDwdConsensus(dwdConsensus)
+				: undefined,
 		forecast: forecast
 			? {
 					source: describeWeatherSource(
@@ -1637,7 +1817,7 @@ function buildStatusFromHistoryEntry(
 		const unavailableReason = stale
 			? "Fresh temperature data is unavailable."
 			: entryOutside?.unavailableReason ||
-				"Bright Sky did not provide a current outdoor observation.";
+				"No fresh outdoor observation was available.";
 
 		return {
 			checkedAt: stale ? new Date().toISOString() : entry.checkedAt,
@@ -1791,7 +1971,7 @@ async function collectFreshCoolingStatus() {
 		const rooms = buildRoomsWithoutOutdoorComparison(target.rooms);
 		const unavailableReason =
 			outside.currentUnavailableReason ||
-			"Bright Sky did not provide a current outdoor observation.";
+			"No fresh outdoor observation was available.";
 		const status: CoolingStatus = {
 			checkedAt,
 			location: {

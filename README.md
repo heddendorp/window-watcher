@@ -22,6 +22,7 @@ Important local files:
 - `SAMPLE_INTERVAL_MS`: optional sampler override; defaults to one minute locally and ten minutes on Railway.
 - `PREDICTION_HORIZON_MINUTES`: comparison window for open versus closed room predictions; defaults to 90 minutes.
 - `MIN_FORECAST_COOLING_WINDOW_MINUTES`: how long forecast air must remain useful before the dashboard recommends opening later; defaults to 30 minutes.
+- `DWD_OBSERVATION_MAX_AGE_MS`, `DWD_MINIMUM_STATIONS`, and `DWD_MAXIMUM_SPREAD_C`: safety limits for the direct DWD fallback. Defaults require two observations no older than 90 minutes that agree within 3°C.
 
 Authentication:
 
@@ -57,4 +58,4 @@ Railway setup:
 
 Railway does not replace app-level auth here. Its "Login with Railway" feature is for letting applications authenticate Railway users and access Railway resources, while this dashboard needs Google sign-in for one private user. Clerk is the cleaner fit and is also one of Railway's documented frontend-auth options.
 
-The app uses generated shadcn UI components for controls, including the chart range buttons. It reads Bright Sky DWD observations for current outdoor temperature and Bright Sky/DWD forecast data. Predictions integrate the forecast across the configured horizon and only announce a future cooling window when it remains useful for the configured minimum duration.
+The app uses generated shadcn UI components for controls, including the chart range buttons. It normally reads Bright Sky's dedicated current DWD observation and Bright Sky/DWD forecast data. If Bright Sky has no current value, it queries DWD Open Data directly and only accepts a fresh consensus from at least two nearby stations; stale, missing, or conflicting readings remain unavailable. Predictions integrate the forecast across the configured horizon and only announce a future cooling window when it remains useful for the configured minimum duration.
