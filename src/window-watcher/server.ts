@@ -15,6 +15,12 @@ import type {
 	TemperatureHistoryEntry,
 	TrendDirection,
 } from "./types";
+import {
+	type BrightSkyCurrentWeatherResponse,
+	type BrightSkyHourlyWeatherResponse,
+	selectBrightSkyObservation,
+	type WeatherSource,
+} from "./weather-model";
 
 const ROOT = process.cwd();
 const DEFAULT_DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
@@ -149,17 +155,6 @@ type ModeledRoom = TadoRoom & {
 	prediction: NonNullable<RoomReading["prediction"]>;
 };
 
-type WeatherSource = {
-	id?: number;
-	dwd_station_id?: string;
-	observation_type?: string;
-	lat?: number;
-	lon?: number;
-	station_name?: string;
-	wmo_station_id?: string;
-	distance?: number;
-};
-
 type OutsideWeather = {
 	current?: {
 		temperatureC?: number;
@@ -237,6 +232,7 @@ async function requestJson<T>(
 	if (!response.ok) {
 		const providerMessage = [
 			data.message,
+			data.detail,
 			data.error_description,
 			data.error,
 		].find(
@@ -566,7 +562,9 @@ async function fetchOutsideWeather() {
 	}
 
 	const now = new Date();
-	const forecastStart = startOfHour(new Date(now.getTime() - 30 * 60 * 1000));
+	const forecastStart = startOfHour(
+		new Date(now.getTime() - 2 * 60 * 60 * 1000),
+	);
 	const forecastEnd = new Date(now.getTime() + 5 * 60 * 60 * 1000);
 	const currentParams = new URLSearchParams({
 		lat: String(config.latitude),
@@ -579,97 +577,99 @@ async function fetchOutsideWeather() {
 		last_date: forecastEnd.toISOString(),
 	});
 
-	let current: {
-		weather?: {
-			source_id?: number;
-			timestamp?: string;
-			temperature?: number;
-			relative_humidity?: number;
-		};
-		sources?: Array<WeatherSource>;
-	};
-	let forecast: {
-		weather?: Array<{
-			source_id?: number;
-			timestamp?: string;
-			temperature?: number;
-		}>;
-		sources?: Array<WeatherSource>;
-	};
+	const [currentResult, forecastResult] = await Promise.allSettled([
+		requestJson<BrightSkyCurrentWeatherResponse>(
+			`https://api.brightsky.dev/current_weather?${currentParams.toString()}`,
+			{ errorContext: "Bright Sky current weather" },
+		),
+		requestJson<BrightSkyHourlyWeatherResponse>(
+			`https://api.brightsky.dev/weather?${forecastParams.toString()}`,
+			{ errorContext: "Bright Sky forecast" },
+		),
+	]);
+	const current =
+		currentResult.status === "fulfilled" ? currentResult.value : undefined;
+	const forecast =
+		forecastResult.status === "fulfilled" ? forecastResult.value : undefined;
+	const failures = [currentResult, forecastResult]
+		.filter((result) => result.status === "rejected")
+		.map((result) => result.reason);
 
-	try {
-		[current, forecast] = await Promise.all([
-			requestJson<{
-				weather?: {
-					source_id?: number;
-					timestamp?: string;
-					temperature?: number;
-					relative_humidity?: number;
-				};
-				sources?: Array<WeatherSource>;
-			}>(
-				`https://api.brightsky.dev/current_weather?${currentParams.toString()}`,
-				{ errorContext: "Bright Sky current weather" },
-			),
-			requestJson<{
-				weather?: Array<{
-					source_id?: number;
-					timestamp?: string;
-					temperature?: number;
-				}>;
-				sources?: Array<WeatherSource>;
-			}>(`https://api.brightsky.dev/weather?${forecastParams.toString()}`, {
-				errorContext: "Bright Sky forecast",
-			}),
-		]);
-	} catch (error) {
-		if (isHttpError(error, 429)) {
-			weatherRateLimitUntil = nowMs + config.weatherRateLimitBackoffMs;
-			if (outsideWeatherCache) return outsideWeatherCache.data;
-		}
-		throw error;
+	if (failures.some((error) => isHttpError(error, 429))) {
+		weatherRateLimitUntil = nowMs + config.weatherRateLimitBackoffMs;
 	}
 
-	const currentSource = findWeatherSource(
-		current.sources,
-		current.weather?.source_id,
-	);
+	const observation = selectBrightSkyObservation(current, forecast, nowMs);
+	if (!observation) {
+		if (
+			outsideWeatherCache &&
+			failures.some((error) => isHttpError(error, 429))
+		) {
+			return outsideWeatherCache.data;
+		}
+
+		throw (
+			failures[0] ||
+			new Error("Could not read a current Bright Sky observation.")
+		);
+	}
+
+	if (currentResult.status === "rejected" && observation.usedHourlyFallback) {
+		logWeatherWarning(
+			"current-observation-fallback",
+			`Current weather unavailable (${errorMessage(currentResult.reason)}); using the latest hourly observation.`,
+		);
+	}
+	if (forecastResult.status === "rejected") {
+		logWeatherWarning(
+			"forecast-unavailable",
+			`Forecast unavailable (${errorMessage(forecastResult.reason)}); continuing with the current observation.`,
+		);
+	}
+
 	const forecastSource = findWeatherSource(
-		forecast.sources,
-		forecast.weather?.find((point) => point.source_id != null)?.source_id,
+		forecast?.sources,
+		forecast?.weather?.find((point) => point.source_id != null)?.source_id,
 	);
 
 	const outsideWeather = {
 		current: {
-			temperatureC: current.weather?.temperature,
-			humidityPercent: current.weather?.relative_humidity,
-			observedAt: current.weather?.timestamp,
+			temperatureC: observation.temperatureC,
+			humidityPercent: observation.humidityPercent,
+			observedAt: observation.observedAt,
 			source: describeWeatherSource(
-				"Bright Sky DWD observation",
-				currentSource,
+				observation.usedHourlyFallback
+					? "Bright Sky DWD hourly observation"
+					: "Bright Sky DWD observation",
+				observation.source,
 			),
 		},
-		forecast: {
-			source: describeWeatherSource("Bright Sky DWD forecast", forecastSource),
-			points: (forecast.weather || [])
-				.map((point) => ({
-					time: point.timestamp || "",
-					timestamp: new Date(point.timestamp || "").getTime(),
-					temperatureC: point.temperature,
-				}))
-				.filter(
-					(
-						point,
-					): point is {
-						time: string;
-						timestamp: number;
-						temperatureC: number;
-					} =>
-						Boolean(point.time) &&
-						Number.isFinite(point.timestamp) &&
-						Number.isFinite(point.temperatureC),
-				),
-		},
+		forecast: forecast
+			? {
+					source: describeWeatherSource(
+						"Bright Sky DWD forecast",
+						forecastSource,
+					),
+					points: (forecast.weather || [])
+						.map((point) => ({
+							time: point.timestamp || "",
+							timestamp: new Date(point.timestamp || "").getTime(),
+							temperatureC: point.temperature,
+						}))
+						.filter(
+							(
+								point,
+							): point is {
+								time: string;
+								timestamp: number;
+								temperatureC: number;
+							} =>
+								Boolean(point.time) &&
+								Number.isFinite(point.timestamp) &&
+								Number.isFinite(point.temperatureC),
+						),
+				}
+			: undefined,
 	} satisfies OutsideWeather;
 
 	outsideWeatherCache = { createdAt: nowMs, data: outsideWeather };
@@ -699,6 +699,25 @@ function describeWeatherSource(
 		stationName: source?.station_name,
 		distanceMeters: source?.distance,
 	};
+}
+
+let lastWeatherWarning: { key: string; loggedAt: number } | null = null;
+
+function logWeatherWarning(key: string, message: string) {
+	const now = Date.now();
+	if (
+		lastWeatherWarning?.key === key &&
+		now - lastWeatherWarning.loggedAt < 10 * 60 * 1000
+	) {
+		return;
+	}
+
+	lastWeatherWarning = { key, loggedAt: now };
+	console.warn(`[window-watcher:weather] ${message}`);
+}
+
+function errorMessage(error: unknown) {
+	return error instanceof Error ? error.message : "unknown error";
 }
 
 function buildVerdict(insideC: number, outsideC: number, roomName = "inside") {

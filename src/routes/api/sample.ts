@@ -21,6 +21,17 @@ export const Route = createFileRoute("/api/sample")({
 						reason: "rate_limited",
 					});
 				}
+				if (status.stale) {
+					return Response.json(
+						{
+							ok: false,
+							skipped: true,
+							reason: "stale_fallback",
+							lastFreshAt: status.lastFreshAt,
+						},
+						{ status: 503 },
+					);
+				}
 
 				return Response.json({
 					ok: true,
