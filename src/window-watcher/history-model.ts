@@ -22,6 +22,7 @@ export function sanitizeTemperatureHistoryEntry(
 			zoneName: room.zoneName,
 			temperatureC: room.temperatureC,
 			humidityPercent: room.humidityPercent,
+			observedAt: room.observedAt,
 		})),
 		recommendation: undefined,
 		verdict: undefined,

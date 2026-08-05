@@ -13,6 +13,7 @@ const baseEntry: TemperatureHistoryEntry = {
 			zoneId: 1,
 			zoneName: "Living room",
 			temperatureC: 29.4,
+			observedAt: "2026-07-13T15:43:00.000Z",
 			differenceC: 7.7,
 			verdictAction: "open",
 		},
@@ -48,6 +49,7 @@ describe("sanitizeTemperatureHistoryEntry", () => {
 			zoneName: "Living room",
 			temperatureC: 29.4,
 			humidityPercent: undefined,
+			observedAt: "2026-07-13T15:43:00.000Z",
 		});
 		expect(sanitized.recommendation).toBeUndefined();
 		expect(sanitized.verdict).toBeUndefined();

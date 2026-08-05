@@ -38,7 +38,12 @@ import {
 	pollTadoReconnect,
 	startTadoReconnect,
 } from "../window-watcher/functions";
+import { describeNextCheck } from "../window-watcher/sampling-schedule";
 import { getSparklineAreaStops } from "../window-watcher/sparkline";
+import {
+	getOutdoorTemperatureSeries,
+	getRoomTemperatureSeries,
+} from "../window-watcher/temperature-series";
 import type {
 	DashboardData,
 	RoomReading,
@@ -56,9 +61,9 @@ export const Route = createFileRoute("/")({
 	component: App,
 });
 
-const roomColors = ["#ff7a59", "#9c8cff", "#ffb454", "#4cc9f0", "#ff6fa0"];
-const outsideColor = "#2dd4bf";
-const outsideForecastColor = "#f2b953";
+const roomColors = ["#b94718", "#6a56d6", "#8a6108", "#1c86c9", "#c93e73"];
+const outsideColor = "#0f8176";
+const outsideForecastColor = "#5267a8";
 const mainChartCurveType = "basis";
 const sparklineCurveType = mainChartCurveType;
 const measurementProgressRecalculationMs = 5 * 1000;
@@ -307,7 +312,6 @@ function Dashboard({
 }) {
 	const { status, history } = data;
 	const currentOutsideC = status.outside.temperatureC;
-	const hasCurrentOutside = currentOutsideC != null;
 	const [activeChartLineKey, setActiveChartLineKey] = useState<string | null>(
 		null,
 	);
@@ -316,19 +320,35 @@ function Dashboard({
 		measurementProgressRecalculationMs,
 	);
 	const measurementAt = new Date(status.lastFreshAt || status.checkedAt);
-	const recommendationPrediction = status.recommendation.prediction;
 	const measurementAge = formatMeasurementAge(
 		measurementAt,
 		measurementReferenceAt,
 	);
 	const isMeasurementStale = status.stale || measurementAge.minutes >= 30;
+	const displayedVerdict = isMeasurementStale
+		? {
+				action: "unknown" as const,
+				title: "Recommendation paused",
+				detail: "Fresh room readings are needed before comparing temperatures.",
+			}
+		: status.verdict;
+	const displayedOutsideC = isMeasurementStale ? undefined : currentOutsideC;
+	const nextCheckAt = new Date(data.sampling.nextExpectedCheckAt);
+	const nextCheckDescription = describeNextCheck(
+		measurementReferenceAt.getTime(),
+		data.sampling.nextExpectedCheckAt,
+	);
+	const nextCheckLabel =
+		isRefreshing && nextCheckDescription === "Room check due"
+			? "Checking for new room readings…"
+			: nextCheckDescription;
 	const filteredHistory = useMemo(
 		() => filterHistory(history, rangeMode),
 		[history, rangeMode],
 	);
 	const chartRows = useMemo(
-		() => buildChartRows(filteredHistory, status.rooms, status),
-		[filteredHistory, status],
+		() => buildChartRows(filteredHistory, status.rooms, status, rangeMode),
+		[filteredHistory, status, rangeMode],
 	);
 	const xAxisTicks = useMemo(
 		() => buildXAxisTicks(chartRows, rangeMode),
@@ -348,9 +368,6 @@ function Dashboard({
 	);
 	const hasChartData = legendItems.length > 0;
 	const nextAvailableRange = findNextAvailableRange(history, rangeMode);
-	const hasOutdoorTrend =
-		status.recommendation.outdoorTrend.sampleCount >= 2 &&
-		status.recommendation.outdoorTrend.hours >= 0.25;
 	const handleRangeModeChange = (mode: RangeMode) => {
 		setActiveChartLineKey(null);
 		setRangeMode(mode);
@@ -365,145 +382,19 @@ function Dashboard({
 						? "Showing saved temperatures."
 						: "Refresh complete."}
 			</p>
-			<section className={`status-panel ${status.verdict.action}`}>
-				<div className="flex flex-col gap-6">
-					<div className="flex flex-wrap items-start justify-between gap-4">
-						<div className="min-w-0">
-							<div className="flex flex-wrap items-center gap-3">
-								<p className="text-base font-semibold text-[var(--ww-ink)]">
-									Window Watcher
-								</p>
-								{authEnabled ? <UserButton /> : null}
-							</div>
-							<p className="mt-1.5 flex max-w-4xl flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--ww-ink-soft)]">
-								<span>{status.location.label}</span>
-								<span aria-hidden="true" className="text-[var(--ww-ink-faint)]">
-									·
-								</span>
-								<span>Last room reading {measurementAge.label}</span>
-							</p>
-						</div>
-						<div className="text-right">
-							<p className="data-label">Outside now</p>
-							<p className="mono-num mt-1 text-3xl font-semibold text-[var(--ww-ink)] sm:text-4xl">
-								{formatTemp(currentOutsideC)}
-							</p>
-							{hasCurrentOutside ? null : (
-								<p className="mt-1 text-xs font-semibold text-[var(--ww-ink-faint)]">
-									Unavailable
-								</p>
-							)}
-						</div>
-					</div>
-
-					<div>
-						<h1 className="verdict-title text-[1.75rem] leading-tight font-semibold sm:text-4xl">
-							{status.verdict.title}
-						</h1>
-						<p className="mt-2 max-w-2xl text-base text-[var(--ww-ink-soft)]">
-							{status.verdict.detail}
-						</p>
-					</div>
-
-					{currentOutsideC != null &&
-					status.recommendation.thresholdC != null ? (
-						<ThermalGauge
-							forecastMinC={
-								status.recommendation.forecast?.minTemperatureC ?? null
-							}
-							outsideC={currentOutsideC}
-							referenceRoomName={
-								recommendationPrediction?.referenceZoneName ??
-								status.tado.referenceZoneName ??
-								"the reference room"
-							}
-							horizonMinutes={recommendationPrediction?.horizonMinutes}
-							thresholdC={status.recommendation.thresholdC}
-						/>
-					) : null}
-
-					<div className="data-grid">
-						<div className="data-cell">
-							<p className="data-label">Last room reading</p>
-							<p className="mt-1 text-sm font-semibold text-[var(--ww-ink)]">
-								{formatDateTime(measurementAt)}
-							</p>
-						</div>
-						{hasOutdoorTrend ? (
-							<div className="data-cell">
-								<p className="data-label">Outdoor trend</p>
-								<p className="mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
-									{status.recommendation.outdoorTrend.direction} ·{" "}
-									{formatDelta(status.recommendation.outdoorTrend.changeC)} over{" "}
-									{status.recommendation.outdoorTrend.hours.toFixed(1)}h
-								</p>
-							</div>
-						) : null}
-						{status.recommendation.forecast?.minTemperatureC == null ? null : (
-							<div className="data-cell">
-								<p className="data-label">
-									Next {status.recommendation.forecast.horizonHours.toFixed(0)}h
-									low
-								</p>
-								<p className="mono-num mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
-									{formatTemp(status.recommendation.forecast.minTemperatureC)}
-								</p>
-							</div>
-						)}
-						{recommendationPrediction ? (
-							<div className="data-cell">
-								<p className="data-label">
-									{recommendationPrediction.horizonMinutes}m prediction
-								</p>
-								<p className="mono-num mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
-									{formatTemp(
-										recommendationPrediction.predictedOpenTemperatureC,
-									)}{" "}
-									open ·{" "}
-									{formatTemp(
-										recommendationPrediction.predictedClosedTemperatureC,
-									)}{" "}
-									closed
-								</p>
-							</div>
-						) : null}
-						{recommendationPrediction ? (
-							<div className="data-cell">
-								<p className="data-label">Rebound risk</p>
-								<p className="mono-num mt-0.5 text-sm font-semibold text-[var(--ww-ink)]">
-									{formatDelta(recommendationPrediction.expectedReboundC)} ·
-									mass {formatTemp(recommendationPrediction.massTemperatureC)}
-								</p>
-							</div>
-						) : null}
-					</div>
-
-					{status.recommendation.forecast?.summary ? (
-						<p className="-mt-3 text-sm font-semibold text-[var(--ww-ink-soft)]">
-							{status.recommendation.forecast.summary}
-						</p>
-					) : null}
-					{isMeasurementStale ? (
-						<Alert className="border-[var(--ww-gold)] bg-[var(--ww-gold-soft)]">
-							<AlertTitle className="text-[var(--ww-ink)]">
-								Room readings are{" "}
-								{formatMeasurementAgeLong(measurementAge.minutes)}
-							</AlertTitle>
-							<AlertDescription className="text-[var(--ww-ink-soft)]">
-								<p>This recommendation may no longer be accurate.</p>
-								{status.stale ? (
-									<p>{formatStaleReason(status.staleReason)}</p>
-								) : null}
-							</AlertDescription>
-						</Alert>
-					) : null}
-					{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
-						<TadoReconnectPanel />
-					) : null}
+			<header className="flex items-center justify-between gap-4 px-1 pb-4">
+				<div className="min-w-0">
+					<h1 className="text-2xl font-semibold tracking-[-0.02em] text-[var(--ww-ink)] sm:text-3xl">
+						Window Watcher
+					</h1>
+					<p className="mt-1 truncate text-sm text-[var(--ww-ink-soft)]">
+						{status.location.label}
+					</p>
 				</div>
-			</section>
+				{authEnabled ? <UserButton /> : null}
+			</header>
 
-			<Card className="surface-panel mt-5 gap-0 overflow-hidden py-0">
+			<Card className="surface-panel gap-0 overflow-hidden py-0">
 				<CardHeader className="mb-2 flex flex-wrap items-center justify-between gap-3 px-4 pt-5 pb-0 sm:flex-row sm:px-6">
 					<div>
 						<CardTitle asChild>
@@ -512,9 +403,33 @@ function Dashboard({
 							</h2>
 						</CardTitle>
 						<CardDescription className="mt-1 text-sm text-[var(--ww-ink-soft)]">
-							{formatRangeLabel(rangeMode)} · {filteredHistory.length}{" "}
-							{filteredHistory.length === 1 ? "measurement" : "measurements"}
+							{formatRangeLabel(rangeMode)}
 						</CardDescription>
+						<div
+							className={`measurement-clock ${isMeasurementStale || nextCheckDescription === "Room check due" ? "delayed" : ""}`}
+						>
+							<span aria-hidden="true" className="measurement-clock__dot" />
+							<div>
+								<p className="text-sm font-semibold text-[var(--ww-ink)]">
+									{nextCheckLabel}
+								</p>
+								<p className="mt-0.5 text-xs text-[var(--ww-ink-soft)]">
+									{nextCheckDescription === "Room check due" ? null : (
+										<>
+											Expected around{" "}
+											<time
+												className="mono-num"
+												dateTime={nextCheckAt.toISOString()}
+											>
+												{formatTime(nextCheckAt)}
+											</time>{" "}
+											·{" "}
+										</>
+									)}
+									Last successful check {measurementAge.label}
+								</p>
+							</div>
+						</div>
 					</div>
 					<CardAction className="static col-auto row-auto w-full self-auto justify-self-auto sm:w-auto">
 						<ToggleGroup
@@ -562,6 +477,7 @@ function Dashboard({
 									chartRows,
 									legendItems,
 									rangeMode,
+									status,
 								)}
 								className="h-[18rem] w-full sm:h-[22rem]"
 								role="img"
@@ -673,7 +589,8 @@ function Dashboard({
 								No saved readings in {formatRangeLabel(rangeMode).toLowerCase()}
 							</h3>
 							<p className="mt-1 max-w-lg text-sm leading-6 text-[var(--ww-ink-soft)]">
-								New readings will appear here after the next successful sample.
+								New readings will appear here after the next successful room
+								check.
 							</p>
 							{nextAvailableRange ? (
 								<Button
@@ -690,6 +607,53 @@ function Dashboard({
 				</CardContent>
 			</Card>
 
+			{isMeasurementStale ? (
+				<Alert className="mt-4 border-[var(--ww-gold)] bg-[var(--ww-gold-soft)]">
+					<AlertTitle className="text-[var(--ww-ink)]">
+						Room readings are {formatMeasurementAgeLong(measurementAge.minutes)}
+					</AlertTitle>
+					<AlertDescription className="text-[var(--ww-ink-soft)]">
+						<p>No recommendation is shown until a fresh room check succeeds.</p>
+						{status.stale ? (
+							<p>{formatStaleReason(status.staleReason)}</p>
+						) : null}
+					</AlertDescription>
+				</Alert>
+			) : null}
+
+			<section className={`decision-strip ${displayedVerdict.action}`}>
+				<div className="min-w-0">
+					<p className="data-label">Recommendation</p>
+					<h2 className="verdict-title mt-1 text-lg font-semibold sm:text-xl">
+						{displayedVerdict.title}
+					</h2>
+					<p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ww-ink-soft)]">
+						{displayedVerdict.detail}
+					</p>
+					{isMeasurementStale ||
+					!status.recommendation.forecast?.summary ? null : (
+						<p className="mt-1 text-xs leading-5 text-[var(--ww-ink-faint)]">
+							{status.recommendation.forecast.summary}
+						</p>
+					)}
+				</div>
+				<div className="shrink-0 self-end text-right sm:self-auto">
+					<p className="data-label">Outside now</p>
+					<p className="mono-num mt-1 text-2xl font-semibold text-[var(--ww-ink)] sm:text-3xl">
+						{formatTemp(displayedOutsideC)}
+					</p>
+					{displayedOutsideC != null ? null : (
+						<p className="mt-1 text-xs font-semibold text-[var(--ww-ink-faint)]">
+							Unavailable
+						</p>
+					)}
+				</div>
+			</section>
+
+			{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
+				<TadoReconnectPanel />
+			) : null}
+
 			<Card className="surface-panel mt-5 gap-0 py-0">
 				<CardHeader className="mb-2 flex flex-row items-center justify-between px-4 pt-5 pb-0 sm:px-6">
 					<CardTitle asChild>
@@ -704,89 +668,22 @@ function Dashboard({
 				<CardContent className="px-4 pb-5 sm:px-6">
 					<div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
 						{status.rooms.map((room) => (
-							<RoomCard history={history} key={room.zoneId} room={room} />
+							<RoomCard
+								history={history}
+								key={room.zoneId}
+								referenceAt={measurementReferenceAt}
+								room={room}
+							/>
 						))}
 					</div>
 				</CardContent>
 			</Card>
 			<footer className="px-1 py-6 text-xs text-[var(--ww-ink-faint)]">
-				Refreshes every minute while this page is open.
+				While this page is active, it checks for updates every minute. Room
+				checks are scheduled every {formatInterval(data.sampling.intervalMs)}
+				{"; "}Tado may keep the same sensor value until it reports a change.
 			</footer>
 		</main>
-	);
-}
-
-function ThermalGauge({
-	forecastMinC,
-	horizonMinutes,
-	outsideC,
-	referenceRoomName,
-	thresholdC,
-}: {
-	forecastMinC: number | null;
-	horizonMinutes?: number;
-	outsideC: number;
-	referenceRoomName: string;
-	thresholdC: number;
-}) {
-	const knownValues = [outsideC, thresholdC];
-	if (forecastMinC != null) knownValues.push(forecastMinC);
-
-	const rawMin = Math.min(...knownValues);
-	const rawMax = Math.max(...knownValues);
-	const padding = Math.max(1.4, (rawMax - rawMin) * 0.4);
-	const scaleMin = rawMin - padding;
-	const scaleMax = rawMax + padding;
-	const toPercent = (value: number) =>
-		Math.min(
-			100,
-			Math.max(0, ((value - scaleMin) / (scaleMax - scaleMin)) * 100),
-		);
-
-	return (
-		<div
-			aria-label={`Outside is ${formatTemp(outsideC)}. Open-window cooling becomes useful at or below ${formatTemp(thresholdC)}, based on ${referenceRoomName}${horizonMinutes ? ` over ${horizonMinutes} minutes` : ""}.${forecastMinC == null ? "" : ` The forecast low is ${formatTemp(forecastMinC)}.`}`}
-			className="temperature-rule"
-			role="img"
-		>
-			<div aria-hidden="true" className="thermal-gauge">
-				<div
-					className="thermal-gauge__cool-zone"
-					style={{ width: `${toPercent(thresholdC)}%` }}
-				/>
-				<div
-					className="thermal-gauge__tick"
-					style={{ left: `${toPercent(thresholdC)}%` }}
-				/>
-				{forecastMinC == null ? null : (
-					<div
-						className="thermal-gauge__ghost"
-						style={{ left: `${toPercent(forecastMinC)}%` }}
-					/>
-				)}
-				<div
-					className="thermal-gauge__marker"
-					style={{ left: `${toPercent(outsideC)}%` }}
-				/>
-			</div>
-			<div className="temperature-rule__legend">
-				<span>
-					<strong>Outside</strong> {formatTemp(outsideC)}
-				</span>
-				<span>
-					<strong>Open below</strong> {formatTemp(thresholdC)}
-				</span>
-				{forecastMinC == null ? null : (
-					<span>
-						<strong>Forecast low</strong> {formatTemp(forecastMinC)}
-					</span>
-				)}
-			</div>
-			<p className="mt-2 text-sm text-[var(--ww-ink-soft)]">
-				The opening threshold is based on {referenceRoomName}
-				{horizonMinutes ? ` and the next ${horizonMinutes} minutes` : ""}.
-			</p>
-		</div>
 	);
 }
 
@@ -1034,14 +931,26 @@ function formatStaleReason(reason: string | undefined) {
 function RoomCard({
 	room,
 	history,
+	referenceAt,
 }: {
 	room: RoomReading;
 	history: Array<TemperatureHistoryEntry>;
+	referenceAt: Date;
 }) {
 	const sparklinePoints = getRoomSparkline(history, room.zoneId);
 	const hourlyTrend = getRoomHourlyTrend(history, room.zoneId);
 	const trendClass = hourlyTrend?.direction || "steady";
 	const prediction = room.prediction;
+	const observedAtCandidate = room.observedAt
+		? new Date(room.observedAt)
+		: null;
+	const observedAt =
+		observedAtCandidate && Number.isFinite(observedAtCandidate.getTime())
+			? observedAtCandidate
+			: null;
+	const observedAge = observedAt
+		? formatMeasurementAge(observedAt, referenceAt)
+		: null;
 
 	return (
 		<Card className={`room-tile ${trendClass} gap-0 py-0 shadow-none`}>
@@ -1064,6 +973,14 @@ function RoomCard({
 						? ""
 						: ` · ${room.humidityPercent.toFixed(0)}% humidity`}
 				</p>
+				{observedAt && observedAge ? (
+					<p className="mt-1 text-xs text-[var(--ww-ink-faint)]">
+						Sensor updated{" "}
+						<time dateTime={room.observedAt} title={formatDateTime(observedAt)}>
+							{observedAge.label}
+						</time>
+					</p>
+				) : null}
 				{prediction ? (
 					<p className="mt-2 text-xs leading-5 text-[var(--ww-ink-faint)]">
 						In {prediction.horizonMinutes} min:{" "}
@@ -1247,30 +1164,59 @@ function buildChartRows(
 	history: Array<TemperatureHistoryEntry>,
 	rooms: Array<RoomReading>,
 	status: DashboardData["status"],
+	rangeMode: RangeMode,
 ) {
-	const rows = history.map((entry) => {
+	const roomKeys = rooms.map((room) => `room-${room.zoneId}`);
+	const rowsByTime = new Map<number, Record<string, number | string | null>>();
+	const getRow = (timestamp: number) => {
+		const existing = rowsByTime.get(timestamp);
+		if (existing) return existing;
+
+		const time = new Date(timestamp);
 		const row: Record<string, number | string | null> = {
-			time: entry.checkedAt,
-			timestamp: new Date(entry.checkedAt).getTime(),
-			label: formatTime(new Date(entry.checkedAt)),
-			outside: entry.outside?.temperatureC ?? null,
+			time: time.toISOString(),
+			timestamp,
+			label: formatTime(time),
+			outside: null,
 			outsideForecast: null,
+			...Object.fromEntries(roomKeys.map((key) => [key, null])),
 		};
-
-		for (const room of rooms) {
-			const reading = entry.rooms.find(
-				(candidate) => String(candidate.zoneId) === String(room.zoneId),
-			);
-			row[`room-${room.zoneId}`] = reading?.temperatureC ?? null;
-		}
-
+		rowsByTime.set(timestamp, row);
 		return row;
-	});
+	};
+
+	for (const point of getOutdoorTemperatureSeries(history)) {
+		getRow(point.time).outside = point.value;
+	}
+
+	for (const room of rooms) {
+		const key = `room-${room.zoneId}`;
+		for (const point of getRoomTemperatureSeries(history, room.zoneId)) {
+			getRow(point.time)[key] = point.value;
+		}
+	}
+
+	const rows = [...rowsByTime.values()];
 
 	const forecastRows = buildTwoHourForecastRows(status, rooms);
-	return [...rows, ...forecastRows].sort(
-		(left, right) => Number(left.timestamp) - Number(right.timestamp),
-	);
+	const cutoff = getRangeCutoff(rangeMode);
+	return [...rows, ...forecastRows]
+		.sort((left, right) => Number(left.timestamp) - Number(right.timestamp))
+		.filter((row) => Number(row.timestamp) >= cutoff);
+}
+
+function getRangeCutoff(mode: RangeMode) {
+	const hours =
+		mode === "4h"
+			? 4
+			: mode === "16h"
+				? 16
+				: mode === "24h"
+					? 24
+					: mode === "48h"
+						? 48
+						: 24 * 7;
+	return Date.now() - hours * 60 * 60 * 1000;
 }
 
 function buildLegendItems(
@@ -1300,9 +1246,20 @@ function buildChartAriaLabel(
 	rows: Array<Record<string, number | string | null>>,
 	legendItems: Array<{ label: string; color: string }>,
 	mode: RangeMode,
+	status: DashboardData["status"],
 ) {
 	const series = legendItems.map((item) => item.label).join(", ");
-	return `Temperature chart for the ${formatRangeLabel(mode).toLowerCase()}, showing ${series}. ${rows.length} plotted time points.`;
+	const latestValues = [
+		status.outside.temperatureC == null
+			? null
+			: `Outside ${formatTemp(status.outside.temperatureC)}`,
+		...status.rooms.map(
+			(room) => `${room.zoneName} ${formatTemp(room.temperatureC)}`,
+		),
+	]
+		.filter((value): value is string => value != null)
+		.join(", ");
+	return `Temperature chart for the ${formatRangeLabel(mode).toLowerCase()}, showing ${series}. Latest available values: ${latestValues}. ${rows.length} plotted timestamps.`;
 }
 
 function buildXAxisTicks(
@@ -1516,21 +1473,7 @@ function getRoomTemperaturePoints(
 	history: Array<TemperatureHistoryEntry>,
 	zoneId: number | string,
 ) {
-	return history
-		.map((entry) => {
-			const room = entry.rooms.find(
-				(candidate) => String(candidate.zoneId) === String(zoneId),
-			);
-			return {
-				time: new Date(entry.checkedAt).getTime(),
-				value: room?.temperatureC,
-			};
-		})
-		.filter(
-			(point): point is { time: number; value: number } =>
-				Number.isFinite(point.time) && Number.isFinite(point.value),
-		)
-		.sort((left, right) => left.time - right.time);
+	return getRoomTemperatureSeries(history, zoneId);
 }
 
 function formatTemp(value: number | undefined) {
@@ -1592,6 +1535,11 @@ function formatDateTime(date: Date) {
 		dateStyle: "medium",
 		timeStyle: "short",
 	}).format(date);
+}
+
+function formatInterval(intervalMs: number) {
+	const minutes = Math.max(1, Math.round(intervalMs / 60_000));
+	return minutes === 1 ? "minute" : `${minutes} minutes`;
 }
 
 function formatChartTick(value: number, mode: RangeMode) {

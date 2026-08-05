@@ -220,35 +220,64 @@ button {
   box-shadow: none;
 }
 
-.status-panel {
+.decision-strip {
   --verdict-color: var(--ww-breeze);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 16px;
   border: 1px solid var(--md-sys-color-outline-variant);
   border-left: 4px solid var(--verdict-color);
   border-radius: var(--md-sys-shape-corner-medium);
-  padding: 20px;
+  padding: 16px;
   background: var(--md-sys-color-surface-container-lowest);
 }
 
 @media (min-width: 600px) {
-  .status-panel {
-    padding: 24px;
+  .decision-strip {
+    flex-direction: row;
+    padding: 18px 20px;
   }
 }
 
-.status-panel.maybe {
+.decision-strip.maybe {
   --verdict-color: var(--ww-gold);
 }
 
-.status-panel.closed {
+.decision-strip.closed {
   --verdict-color: var(--ww-ember);
 }
 
-.status-panel.unknown {
+.decision-strip.unknown {
   --verdict-color: var(--md-sys-color-on-surface-variant);
 }
 
-.status-panel .verdict-title {
+.decision-strip .verdict-title {
   color: var(--verdict-color);
+}
+
+.measurement-clock {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.measurement-clock__dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 6px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--ww-breeze);
+}
+
+.measurement-clock.delayed .measurement-clock__dot {
+  background: var(--ww-gold);
 }
 
 .data-label {
@@ -256,92 +285,6 @@ button {
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1rem;
-}
-
-.data-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px;
-}
-
-.data-cell {
-  min-width: 0;
-  padding: 12px;
-  border-radius: var(--md-sys-shape-corner-small);
-  background: var(--md-sys-color-surface-container-low);
-}
-
-.temperature-rule {
-  padding: 16px;
-  border-radius: var(--md-sys-shape-corner-small);
-  background: var(--md-sys-color-surface-container-low);
-}
-
-.thermal-gauge {
-  position: relative;
-  height: 10px;
-  overflow: visible;
-  border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-highest);
-}
-
-.thermal-gauge__cool-zone {
-  position: absolute;
-  inset-block: 0;
-  left: 0;
-  border-radius: var(--md-sys-shape-corner-full) 0 0 var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-primary-container);
-}
-
-.thermal-gauge__tick {
-  position: absolute;
-  top: -4px;
-  bottom: -4px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--md-sys-color-on-surface);
-  transform: translateX(-50%);
-}
-
-.thermal-gauge__marker {
-  position: absolute;
-  top: 50%;
-  width: 16px;
-  height: 16px;
-  border: 3px solid var(--verdict-color, var(--ww-breeze));
-  border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-lowest);
-  transform: translate(-50%, -50%);
-}
-
-.thermal-gauge__ghost {
-  position: absolute;
-  top: 50%;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--md-sys-color-on-surface-variant);
-  border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-lowest);
-  transform: translate(-50%, -50%);
-}
-
-.temperature-rule__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 20px;
-  margin-top: 12px;
-  color: var(--md-sys-color-on-surface-variant);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.25rem;
-}
-
-.temperature-rule__legend strong {
-  color: var(--md-sys-color-on-surface);
-  font-family: var(--font-sans);
-  font-weight: 600;
 }
 
 .empty-state {

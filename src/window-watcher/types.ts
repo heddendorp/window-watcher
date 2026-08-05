@@ -8,6 +8,7 @@ export type RoomReading = {
 	type?: string;
 	temperatureC: number;
 	humidityPercent?: number;
+	observedAt?: string;
 	differenceC?: number;
 	prediction?: {
 		horizonMinutes: number;
@@ -64,7 +65,12 @@ export type TemperatureHistoryEntry = {
 	rooms: Array<
 		Pick<
 			RoomReading,
-			"zoneId" | "zoneName" | "temperatureC" | "humidityPercent" | "differenceC"
+			| "zoneId"
+			| "zoneName"
+			| "temperatureC"
+			| "humidityPercent"
+			| "observedAt"
+			| "differenceC"
 		> & {
 			verdictAction?: VerdictAction;
 			prediction?: RoomReading["prediction"];
@@ -165,4 +171,8 @@ export type DashboardData = {
 	status: CoolingStatus;
 	history: Array<TemperatureHistoryEntry>;
 	generatedAt: string;
+	sampling: {
+		intervalMs: number;
+		nextExpectedCheckAt: string;
+	};
 };

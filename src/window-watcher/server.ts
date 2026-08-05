@@ -17,6 +17,18 @@ import {
 	getTimeWeightedForecastTemperature,
 } from "./forecast-model";
 import { sanitizeTemperatureHistoryEntry } from "./history-model";
+import { getNextExpectedCheckAt } from "./sampling-schedule";
+import {
+	selectTadoRoomSnapshots,
+	type TadoRoomSnapshot,
+	type TadoZone,
+	type TadoZoneStatesResponse,
+} from "./tado-model";
+import {
+	findNearbyTemperature,
+	getOutdoorTemperatureSeries,
+	getRoomTemperatureSeries,
+} from "./temperature-series";
 import type {
 	CoolingStatus,
 	RoomReading,
@@ -56,6 +68,7 @@ const DWD_STATION_LIST_URL =
 	"https://opendata.dwd.de/weather/weather_reports/stationlist_synoptic_germany.csv";
 const DWD_POI_BASE_URL = "https://opendata.dwd.de/weather/weather_reports/poi";
 const DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
+const DEFAULT_TADO_OBSERVATION_MAX_AGE_MS = 30 * 60 * 1000;
 const TADO_TOPOLOGY_CACHE_MS = 60 * 60 * 1000;
 const DEFAULT_THERMAL_MASS_TAU_HOURS = 8;
 const DEFAULT_REBOUND_FACTOR = 0.7;
@@ -127,6 +140,14 @@ const config = {
 		process.env.TADO_RATE_LIMIT_BACKOFF_MS ||
 			DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS,
 	),
+	tadoObservationMaxAgeMs: Math.min(
+		60 * 60 * 1000,
+		Math.max(
+			20 * 60 * 1000,
+			Number(process.env.TADO_OBSERVATION_MAX_AGE_MS) ||
+				DEFAULT_TADO_OBSERVATION_MAX_AGE_MS,
+		),
+	),
 	thermalMassTauHours: Number(
 		process.env.THERMAL_MASS_TAU_HOURS || DEFAULT_THERMAL_MASS_TAU_HOURS,
 	),
@@ -164,7 +185,7 @@ let tadoRateLimitUntil = 0;
 let tadoTopologyCache: {
 	createdAt: number;
 	homeId: number | string;
-	zones: Array<{ id: number | string; name: string; type?: string }>;
+	zones: Array<TadoZone>;
 } | null = null;
 const tadoDeviceFlows = new Map<string, TadoDeviceFlow>();
 
@@ -185,14 +206,7 @@ type TadoDeviceFlow = {
 	intervalSeconds: number;
 };
 
-type TadoRoom = {
-	homeId: number | string;
-	zoneId: number | string;
-	zoneName: string;
-	type?: string;
-	temperatureC: number;
-	humidityPercent?: number;
-};
+type TadoRoom = TadoRoomSnapshot;
 
 type ModeledRoom = TadoRoom & {
 	differenceC: number;
@@ -551,9 +565,9 @@ async function resolveTadoTopology() {
 
 	if (!homeId) throw new Error("No tado home found for this account.");
 
-	const zones = await tadoApi<
-		Array<{ id: number | string; name: string; type?: string }>
-	>(`/homes/${encodeURIComponent(homeId)}/zones`);
+	const zones = await tadoApi<Array<TadoZone>>(
+		`/homes/${encodeURIComponent(homeId)}/zones`,
+	);
 	const topology = { createdAt: now, homeId, zones };
 	tadoTopologyCache = topology;
 	return topology;
@@ -568,38 +582,17 @@ async function resolveTadoRooms() {
 	}
 
 	const { homeId, zones } = await resolveTadoTopology();
-	const selectedZones = config.zoneId
-		? zones.filter((zone) => String(zone.id) === String(config.zoneId))
-		: zones;
-
-	const roomResults: Array<TadoRoom | null> = [];
-	for (const zone of selectedZones) {
-		const state = await tadoApi<{
-			sensorDataPoints?: {
-				insideTemperature?: { celsius?: number };
-				humidity?: { percentage?: number };
-			};
-		}>(
-			`/homes/${encodeURIComponent(homeId)}/zones/${encodeURIComponent(zone.id)}/state`,
-		);
-		const temperatureC = state.sensorDataPoints?.insideTemperature?.celsius;
-
-		if (temperatureC == null) {
-			roomResults.push(null);
-			continue;
-		}
-
-		roomResults.push({
-			homeId,
-			zoneId: zone.id,
-			zoneName: zone.name,
-			type: zone.type,
-			temperatureC,
-			humidityPercent: state.sensorDataPoints?.humidity?.percentage,
-		} satisfies TadoRoom);
-	}
-
-	const rooms = roomResults.filter((room): room is TadoRoom => room != null);
+	const zoneStates = await tadoApi<TadoZoneStatesResponse>(
+		`/homes/${encodeURIComponent(homeId)}/zoneStates`,
+	);
+	const rooms = selectTadoRoomSnapshots({
+		homeId,
+		maximumObservationAgeMs: config.tadoObservationMaxAgeMs,
+		nowMs: Date.now(),
+		selectedZoneId: config.zoneId || undefined,
+		zones,
+		zoneStates,
+	});
 	if (!rooms.length) {
 		throw new Error(
 			"No tado rooms with inside temperature readings were found.",
@@ -1053,30 +1046,10 @@ function getRoomHistoryPoints(
 	history: Array<TemperatureHistoryEntry>,
 	zoneId: number | string,
 ) {
-	return history
-		.map((entry) => {
-			const room = entry.rooms.find(
-				(candidate) => String(candidate.zoneId) === String(zoneId),
-			);
-			return {
-				time: new Date(entry.checkedAt).getTime(),
-				indoorC: room?.temperatureC,
-				outsideC: entry.outside?.temperatureC,
-			};
-		})
-		.filter(
-			(
-				point,
-			): point is {
-				time: number;
-				indoorC: number;
-				outsideC: number | undefined;
-			} =>
-				Number.isFinite(point.time) &&
-				Number.isFinite(point.indoorC) &&
-				(point.outsideC == null || Number.isFinite(point.outsideC)),
-		)
-		.sort((left, right) => left.time - right.time);
+	return getRoomTemperatureSeries(history, zoneId).map((point) => ({
+		time: point.time,
+		indoorC: point.value,
+	}));
 }
 
 function estimateMassTemperature(
@@ -1090,10 +1063,12 @@ function estimateMassTemperature(
 	const points = getRoomHistoryPoints(history, room.zoneId).filter(
 		(point) => point.time >= cutoff && point.time <= checkedTime,
 	);
-	const samples = [
-		...points,
-		{ time: checkedTime, indoorC: room.temperatureC, outsideC: undefined },
-	];
+	const observedTime = new Date(room.observedAt || checkedAt).getTime();
+	const samples = points.some((point) => point.time === observedTime)
+		? points
+		: [...points, { time: observedTime, indoorC: room.temperatureC }].sort(
+				(left, right) => left.time - right.time,
+			);
 
 	let massTemperatureC = samples[0]?.indoorC ?? room.temperatureC;
 	let previousTime = samples[0]?.time ?? checkedTime;
@@ -1137,17 +1112,22 @@ function estimateObservedCoolingRate(
 	history: Array<TemperatureHistoryEntry>,
 ) {
 	const points = getRoomHistoryPoints(history, room.zoneId);
+	const outdoorPoints = getOutdoorTemperatureSeries(history);
 	const rates: Array<number> = [];
 
 	for (let index = 1; index < points.length; index += 1) {
 		const previous = points[index - 1];
 		const current = points[index];
-		if (previous.outsideC == null) continue;
+		const previousOutsideC = findNearbyTemperature(
+			outdoorPoints,
+			previous.time,
+		);
+		if (previousOutsideC == null) continue;
 
 		const dtHours = (current.time - previous.time) / (60 * 60 * 1000);
 		if (dtHours < 5 / 60 || dtHours > 2) continue;
 
-		const coolingGapC = previous.indoorC - previous.outsideC;
+		const coolingGapC = previous.indoorC - previousOutsideC;
 		const rate = (current.indoorC - previous.indoorC) / dtHours;
 		if (coolingGapC > 0.5 && rate <= 0.05) rates.push(rate);
 	}
@@ -1162,18 +1142,24 @@ function estimateLearnedOpenOffset(
 	history: Array<TemperatureHistoryEntry>,
 ) {
 	const points = getRoomHistoryPoints(history, room.zoneId);
+	const outdoorPoints = getOutdoorTemperatureSeries(history);
 	const offsets: Array<number> = [];
 
 	for (let index = 1; index < points.length; index += 1) {
 		const previous = points[index - 1];
 		const current = points[index];
-		if (previous.outsideC == null || current.outsideC == null) continue;
+		const previousOutsideC = findNearbyTemperature(
+			outdoorPoints,
+			previous.time,
+		);
+		const currentOutsideC = findNearbyTemperature(outdoorPoints, current.time);
+		if (previousOutsideC == null || currentOutsideC == null) continue;
 
 		const dtHours = (current.time - previous.time) / (60 * 60 * 1000);
 		if (dtHours < 10 / 60 || dtHours > 2) continue;
 
 		const rate = (current.indoorC - previous.indoorC) / dtHours;
-		const offset = current.indoorC - current.outsideC;
+		const offset = current.indoorC - currentOutsideC;
 		if (Math.abs(rate) < 0.1 && offset > 0.5) offsets.push(offset);
 	}
 
@@ -1714,6 +1700,7 @@ async function appendHistory(status: CoolingStatus) {
 			zoneName: room.zoneName,
 			temperatureC: room.temperatureC,
 			humidityPercent: room.humidityPercent,
+			observedAt: room.observedAt,
 			differenceC: room.differenceC,
 			prediction: room.prediction,
 			verdictAction: room.verdict.action,
@@ -1907,7 +1894,12 @@ function buildRoomsWithoutOutdoorComparison(
 	rooms: Array<
 		Pick<
 			RoomReading,
-			"zoneId" | "zoneName" | "type" | "temperatureC" | "humidityPercent"
+			| "zoneId"
+			| "zoneName"
+			| "type"
+			| "temperatureC"
+			| "humidityPercent"
+			| "observedAt"
 		>
 	>,
 ) {
@@ -2123,10 +2115,9 @@ async function getCoolingStatus() {
 	const history = await readHistory(
 		Math.max(240, Math.ceil(config.sampleIntervalMs / 60_000) + 10),
 	);
-	const latestHistory = history.at(-1);
 	const latestFullHistory = history.findLast((entry) => entry.rooms.length > 0);
-	const latestHistoryTime = latestHistory
-		? new Date(latestHistory.checkedAt).getTime()
+	const latestHistoryTime = latestFullHistory
+		? new Date(latestFullHistory.checkedAt).getTime()
 		: Number.NaN;
 	if (
 		Number.isFinite(latestHistoryTime) &&
@@ -2171,9 +2162,19 @@ export async function getDashboardPayload() {
 		getCoolingStatus(),
 		readHistory(7 * 24 * 60),
 	]);
+	const generatedAt = new Date();
+	const lastSuccessfulCheckAt = new Date(
+		status.lastFreshAt || status.checkedAt,
+	).getTime();
 	return {
 		status,
 		history,
-		generatedAt: new Date().toISOString(),
+		generatedAt: generatedAt.toISOString(),
+		sampling: {
+			intervalMs: config.sampleIntervalMs,
+			nextExpectedCheckAt: new Date(
+				getNextExpectedCheckAt(lastSuccessfulCheckAt, config.sampleIntervalMs),
+			).toISOString(),
+		},
 	};
 }
