@@ -17,6 +17,7 @@ import {
 	getTimeWeightedForecastTemperature,
 } from "./forecast-model";
 import { sanitizeTemperatureHistoryEntry } from "./history-model";
+import { classifySampleFailure, createSampleFailure } from "./sample-failure";
 import { getNextExpectedCheckAt } from "./sampling-schedule";
 import {
 	selectTadoRoomSnapshots,
@@ -24,6 +25,7 @@ import {
 	type TadoZone,
 	type TadoZoneStatesResponse,
 } from "./tado-model";
+import { buildStoredTadoToken, type TadoTokenResponse } from "./tado-token";
 import {
 	findNearbyTemperature,
 	getOutdoorTemperatureSeries,
@@ -52,6 +54,7 @@ const TOKEN_FILE =
 const LEGACY_TOKEN_FILE = path.join(ROOT, ".tado-token.json");
 const HISTORY_FILE = path.join(DATA_DIR, "temperature-history.jsonl");
 const TADO_CLIENT_ID = "1bb50063-6b0c-4d11-bd99-387f4a91cc46";
+const TADO_LOGIN_ORIGIN = "https://login.tado.com";
 const CACHE_MS = 55 * 1000;
 const DEFAULT_SAMPLE_INTERVAL_MS = process.env.RAILWAY_ENVIRONMENT_ID
 	? 10 * 60 * 1000
@@ -70,6 +73,8 @@ const DWD_POI_BASE_URL = "https://opendata.dwd.de/weather/weather_reports/poi";
 const DEFAULT_TADO_RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
 const DEFAULT_TADO_OBSERVATION_MAX_AGE_MS = 30 * 60 * 1000;
 const TADO_TOPOLOGY_CACHE_MS = 60 * 60 * 1000;
+const TADO_RECONNECT_START_WINDOW_MS = 10 * 60 * 1000;
+const TADO_RECONNECT_MAX_STARTS_PER_WINDOW = 12;
 const DEFAULT_THERMAL_MASS_TAU_HOURS = 8;
 const DEFAULT_REBOUND_FACTOR = 0.7;
 const DEFAULT_PREDICTION_HORIZON_MINUTES = 90;
@@ -168,10 +173,12 @@ const config = {
 };
 
 let refreshInFlight: Promise<TadoToken> | null = null;
+let tokenMutationLock: Promise<void> = Promise.resolve();
 let sampleInFlight: Promise<CoolingStatus | null> | null = null;
 let statusCache: { createdAt: number; data: CoolingStatus } | null = null;
 let samplerStarted = false;
 let lastSampleError: { key: string; loggedAt: number } | null = null;
+let lastSampleFailure: Error | null = null;
 let outsideWeatherCache: { createdAt: number; data: OutsideWeather } | null =
 	null;
 let dwdStationCache: { createdAt: number; stations: Array<DwdStation> } | null =
@@ -188,22 +195,20 @@ let tadoTopologyCache: {
 	zones: Array<TadoZone>;
 } | null = null;
 const tadoDeviceFlows = new Map<string, TadoDeviceFlow>();
+let tadoReconnectStarts: Array<number> = [];
 
-type TadoToken = {
-	access_token?: string;
-	refresh_token?: string;
-	expires_at?: number;
-	expires_in?: number;
-	token_type?: string;
-};
+type TadoToken = TadoTokenResponse;
 
 type TadoDeviceFlow = {
+	ownerId: string;
+	approvedToken?: TadoToken;
 	deviceCode: string;
 	userCode: string;
 	verificationUri: string;
 	verificationUriComplete: string;
 	expiresAt: number;
 	intervalSeconds: number;
+	nextPollAt: number;
 };
 
 type TadoRoom = TadoRoomSnapshot;
@@ -271,16 +276,32 @@ function isHttpError(error: unknown, status: number) {
 	);
 }
 
+function tagProviderError(error: unknown, provider: string) {
+	const detail = error instanceof Error ? error.message : "request failed";
+	return Object.assign(new Error(`${provider} failed: ${detail}`), {
+		cause: error,
+		provider,
+	});
+}
+
 async function requestJson<T>(
 	url: string,
 	options: RequestInit & { errorContext?: string } = {},
 ) {
 	const { errorContext, ...fetchOptions } = options;
-	const response = await fetch(url, {
-		...fetchOptions,
-		signal: fetchOptions.signal || AbortSignal.timeout(config.requestTimeoutMs),
-	});
-	const text = await response.text();
+	let response: Response;
+	let text: string;
+	try {
+		response = await fetch(url, {
+			...fetchOptions,
+			signal:
+				fetchOptions.signal || AbortSignal.timeout(config.requestTimeoutMs),
+		});
+		text = await response.text();
+	} catch (error) {
+		if (errorContext) throw tagProviderError(error, errorContext);
+		throw error;
+	}
 	let data: Record<string, unknown> = {};
 	try {
 		data = text ? JSON.parse(text) : {};
@@ -315,10 +336,15 @@ async function requestJson<T>(
 }
 
 async function requestText(url: string, errorContext: string) {
-	const response = await fetch(url, {
-		redirect: "error",
-		signal: AbortSignal.timeout(config.requestTimeoutMs),
-	});
+	let response: Response;
+	try {
+		response = await fetch(url, {
+			redirect: "error",
+			signal: AbortSignal.timeout(config.requestTimeoutMs),
+		});
+	} catch (error) {
+		throw tagProviderError(error, errorContext);
+	}
 	if (!response.ok) {
 		throw Object.assign(
 			new Error(`${errorContext} failed with ${response.status}`),
@@ -334,35 +360,141 @@ async function requestText(url: string, errorContext: string) {
 		throw new Error(`${errorContext} response was unexpectedly large.`);
 	}
 
-	const text = await response.text();
+	let text: string;
+	try {
+		text = await response.text();
+	} catch (error) {
+		throw tagProviderError(error, errorContext);
+	}
 	if (Buffer.byteLength(text, "utf8") > DWD_MAX_RESPONSE_BYTES) {
 		throw new Error(`${errorContext} response was unexpectedly large.`);
 	}
 	return text;
 }
 
-function assertLocalTadoReconnectAllowed() {
-	if (
-		process.env.RAILWAY_ENVIRONMENT_ID ||
-		process.env.NODE_ENV === "production"
-	) {
+function validateTadoVerificationUrl(value: string) {
+	const url = new URL(value);
+	if (url.origin !== TADO_LOGIN_ORIGIN) {
+		throw new Error("tado returned an unexpected verification address.");
+	}
+	return url;
+}
+
+function requireTadoResponseString(value: unknown, field: string) {
+	if (typeof value !== "string" || value.trim().length === 0) {
+		throw new Error(`tado returned an invalid ${field}.`);
+	}
+	return value;
+}
+
+function boundedTadoSeconds(
+	value: unknown,
+	fallback: number,
+	minimum: number,
+	maximum: number,
+) {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return fallback;
+	return Math.min(maximum, Math.max(minimum, Math.floor(parsed)));
+}
+
+function claimTadoReconnectStart() {
+	const cutoff = Date.now() - TADO_RECONNECT_START_WINDOW_MS;
+	tadoReconnectStarts = tadoReconnectStarts.filter((startedAt) => {
+		return startedAt > cutoff;
+	});
+	if (tadoReconnectStarts.length >= TADO_RECONNECT_MAX_STARTS_PER_WINDOW) {
 		throw Object.assign(
-			new Error("tado reconnect is only available on the local dev server."),
-			{ status: 403 },
+			new Error(
+				"Too many tado reconnect attempts. Try again in a few minutes.",
+			),
+			{ status: 429 },
+		);
+	}
+	tadoReconnectStarts.push(Date.now());
+}
+
+async function assertTadoReconnectHome(token: TadoToken) {
+	if (!config.homeId) {
+		if (IS_RAILWAY || process.env.NODE_ENV === "production") {
+			throw Object.assign(
+				new Error(
+					"TADO_HOME_ID must be configured before tado can reconnect in production.",
+				),
+				{ reconnectTerminal: true, status: 503 },
+			);
+		}
+		return;
+	}
+	if (!token.access_token) {
+		throw Object.assign(
+			new Error("tado did not return an access token for verification."),
+			{ reconnectTerminal: true, status: 502 },
+		);
+	}
+
+	const me = await requestJson<{ homes?: Array<{ id: number | string }> }>(
+		"https://my.tado.com/api/v2/me",
+		{
+			errorContext: "tado reconnect",
+			headers: { Authorization: `Bearer ${token.access_token}` },
+		},
+	);
+	const expectedHomeId = String(config.homeId);
+	const hasExpectedHome = me.homes?.some((home) => {
+		return String(home.id) === expectedHomeId;
+	});
+	if (!hasExpectedHome) {
+		throw Object.assign(
+			new Error(
+				"The approved tado account does not have access to this Window Watcher home.",
+			),
+			{ reconnectTerminal: true, status: 403 },
 		);
 	}
 }
 
-export async function startLocalTadoReconnect() {
-	assertLocalTadoReconnectAllowed();
+function isTerminalTadoReconnectError(error: unknown) {
+	return Boolean(
+		error instanceof Error &&
+			"reconnectTerminal" in error &&
+			(error as { reconnectTerminal?: boolean }).reconnectTerminal,
+	);
+}
+
+async function withTokenMutation<T>(mutation: () => Promise<T>) {
+	const previousMutation = tokenMutationLock;
+	let releaseMutation: () => void = () => undefined;
+	tokenMutationLock = new Promise<void>((resolve) => {
+		releaseMutation = resolve;
+	});
+
+	await previousMutation;
+	try {
+		return await mutation();
+	} finally {
+		releaseMutation();
+	}
+}
+
+export async function startTadoReconnectFlow(ownerId: string) {
+	if (!ownerId) throw new Error("A reconnect owner is required.");
+	claimTadoReconnectStart();
+
+	const now = Date.now();
+	for (const [flowId, flow] of tadoDeviceFlows) {
+		if (flow.expiresAt <= now || flow.ownerId === ownerId) {
+			tadoDeviceFlows.delete(flowId);
+		}
+	}
 
 	const response = await requestJson<{
-		device_code: string;
-		user_code: string;
-		verification_uri: string;
-		verification_uri_complete?: string;
-		expires_in?: number;
-		interval?: number;
+		device_code?: unknown;
+		user_code?: unknown;
+		verification_uri?: unknown;
+		verification_uri_complete?: unknown;
+		expires_in?: unknown;
+		interval?: unknown;
 	}>("https://login.tado.com/oauth2/device_authorize", {
 		method: "POST",
 		body: new URLSearchParams({
@@ -374,17 +506,46 @@ export async function startLocalTadoReconnect() {
 		},
 	});
 
+	const createdAt = Date.now();
+	const deviceCode = requireTadoResponseString(
+		response.device_code,
+		"device code",
+	);
+	const userCode = requireTadoResponseString(response.user_code, "user code");
+	const verificationUriValue = requireTadoResponseString(
+		response.verification_uri,
+		"verification address",
+	);
+	const expiresInSeconds = boundedTadoSeconds(
+		response.expires_in,
+		300,
+		60,
+		600,
+	);
+	const intervalSeconds = boundedTadoSeconds(response.interval, 5, 3, 30);
 	const flowId = crypto.randomUUID();
-	const expiresAt = Date.now() + Number(response.expires_in || 300) * 1000;
+	const expiresAt = createdAt + expiresInSeconds * 1000;
+	const verificationUri = validateTadoVerificationUrl(verificationUriValue);
+	const verificationUriComplete = response.verification_uri_complete
+		? validateTadoVerificationUrl(
+				requireTadoResponseString(
+					response.verification_uri_complete,
+					"complete verification address",
+				),
+			)
+		: new URL(verificationUri);
+	if (!response.verification_uri_complete) {
+		verificationUriComplete.searchParams.set("user_code", userCode);
+	}
 	const flow = {
-		deviceCode: response.device_code,
-		userCode: response.user_code,
-		verificationUri: response.verification_uri,
-		verificationUriComplete:
-			response.verification_uri_complete ||
-			`${response.verification_uri}?user_code=${encodeURIComponent(response.user_code)}`,
+		ownerId,
+		deviceCode,
+		userCode,
+		verificationUri: verificationUri.toString(),
+		verificationUriComplete: verificationUriComplete.toString(),
 		expiresAt,
-		intervalSeconds: Number(response.interval || 5),
+		intervalSeconds,
+		nextPollAt: createdAt + intervalSeconds * 1000,
 	};
 
 	tadoDeviceFlows.set(flowId, flow);
@@ -399,74 +560,116 @@ export async function startLocalTadoReconnect() {
 	};
 }
 
-export async function pollLocalTadoReconnect(flowId: string) {
-	assertLocalTadoReconnectAllowed();
-
+export async function pollTadoReconnectFlow(flowId: string, ownerId: string) {
 	const flow = tadoDeviceFlows.get(flowId);
-	if (!flow) {
+	if (!flow || flow.ownerId !== ownerId) {
 		return {
 			status: "expired" as const,
 			message: "Start a new tado reconnect flow.",
 		};
 	}
 
-	if (Date.now() > flow.expiresAt) {
+	const now = Date.now();
+	if (now > flow.expiresAt) {
 		tadoDeviceFlows.delete(flowId);
 		return {
 			status: "expired" as const,
 			message: "The tado login code expired. Start a new one.",
 		};
 	}
+	if (now < flow.nextPollAt) {
+		return {
+			status: "pending" as const,
+			message: "Waiting for tado approval.",
+			intervalSeconds: Math.max(1, Math.ceil((flow.nextPollAt - now) / 1000)),
+		};
+	}
+	flow.nextPollAt = now + flow.intervalSeconds * 1000;
+
+	let token = flow.approvedToken;
+	if (!token) {
+		try {
+			token = await requestJson<TadoToken>(
+				"https://login.tado.com/oauth2/token",
+				{
+					method: "POST",
+					body: new URLSearchParams({
+						client_id: TADO_CLIENT_ID,
+						grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+						device_code: flow.deviceCode,
+					}),
+					headers: {
+						"content-type": "application/x-www-form-urlencoded",
+					},
+				},
+			);
+		} catch (error) {
+			const details = (error as { details?: { error?: string } }).details;
+			if (details?.error === "authorization_pending") {
+				return {
+					status: "pending" as const,
+					message: "Waiting for tado approval.",
+					intervalSeconds: flow.intervalSeconds,
+				};
+			}
+
+			if (details?.error === "slow_down") {
+				flow.intervalSeconds += 5;
+				flow.nextPollAt = Date.now() + flow.intervalSeconds * 1000;
+				return {
+					status: "pending" as const,
+					message: "Waiting for tado approval.",
+					intervalSeconds: flow.intervalSeconds,
+				};
+			}
+
+			if (
+				details?.error === "access_denied" ||
+				details?.error === "expired_token"
+			) {
+				tadoDeviceFlows.delete(flowId);
+				return {
+					status: "denied" as const,
+					message: "tado did not approve this reconnect. Start a new one.",
+				};
+			}
+
+			throw error;
+		}
+		flow.approvedToken = token;
+	}
+
+	if (!token.access_token || !token.refresh_token) {
+		tadoDeviceFlows.delete(flowId);
+		return {
+			status: "denied" as const,
+			message: "tado did not return a complete authorization. Start again.",
+		};
+	}
 
 	try {
-		const token = await requestJson<TadoToken>(
-			"https://login.tado.com/oauth2/token",
-			{
-				method: "POST",
-				body: new URLSearchParams({
-					client_id: TADO_CLIENT_ID,
-					grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-					device_code: flow.deviceCode,
-				}),
-				headers: {
-					"content-type": "application/x-www-form-urlencoded",
-				},
-			},
-		);
-
-		if (!token.refresh_token) {
-			throw new Error(
-				"tado authorized the login but did not return a refresh token.",
-			);
-		}
-
-		await writeToken(token);
-		tadoDeviceFlows.delete(flowId);
-		statusCache = null;
-
-		return {
-			status: "connected" as const,
-			message: "tado is connected locally.",
-		};
+		await assertTadoReconnectHome(token);
+		await withTokenMutation(() => writeToken(token));
 	} catch (error) {
-		const details = (error as { details?: { error?: string } }).details;
-		if (details?.error === "authorization_pending") {
+		if (isTerminalTadoReconnectError(error)) {
+			tadoDeviceFlows.delete(flowId);
 			return {
-				status: "pending" as const,
-				message: "Waiting for tado approval.",
+				status: "denied" as const,
+				message: (error as Error).message,
 			};
 		}
-
-		if (details?.error === "slow_down") {
-			flow.intervalSeconds += 5;
-			return {
-				status: "pending" as const,
-				message: "Waiting for tado approval.",
-			};
-		}
-
 		throw error;
 	}
+
+	tadoDeviceFlows.delete(flowId);
+	statusCache = null;
+	tadoTopologyCache = null;
+	tadoRateLimitUntil = 0;
+
+	return {
+		status: "connected" as const,
+		message: "tado is connected.",
+	};
 }
 
 async function readToken() {
@@ -494,19 +697,21 @@ function readTokenFromEnvironment() {
 	return JSON.parse(process.env.TADO_TOKEN_JSON) as TadoToken;
 }
 
-async function writeToken(token: TadoToken) {
-	const expiresAt =
-		Date.now() + Math.max(0, Number(token.expires_in || 0) - 60) * 1000;
-	const stored = {
-		access_token: token.access_token,
-		refresh_token: token.refresh_token,
-		expires_at: expiresAt,
-		token_type: token.token_type || "Bearer",
-	};
+async function writeToken(token: TadoToken, fallbackRefreshToken?: string) {
+	const stored = buildStoredTadoToken(token, fallbackRefreshToken);
 	await fs.mkdir(path.dirname(TOKEN_FILE), { recursive: true });
-	await fs.writeFile(TOKEN_FILE, JSON.stringify(stored, null, 2), {
-		mode: 0o600,
-	});
+	const temporaryTokenFile = `${TOKEN_FILE}.${crypto.randomUUID()}.tmp`;
+	try {
+		await fs.writeFile(temporaryTokenFile, JSON.stringify(stored, null, 2), {
+			flag: "wx",
+			mode: 0o600,
+		});
+		await fs.rename(temporaryTokenFile, TOKEN_FILE);
+		await fs.chmod(TOKEN_FILE, 0o600);
+	} catch (error) {
+		await fs.rm(temporaryTokenFile, { force: true }).catch(() => undefined);
+		throw error;
+	}
 	return stored;
 }
 
@@ -514,6 +719,7 @@ async function getAccessToken() {
 	const token = await readToken();
 	if (!token?.refresh_token) {
 		throw Object.assign(new Error("tado is not connected yet."), {
+			provider: "tado authorization",
 			status: 401,
 		});
 	}
@@ -522,7 +728,7 @@ async function getAccessToken() {
 		return token.access_token;
 	}
 
-	refreshInFlight ??= refreshToken(token.refresh_token).finally(() => {
+	refreshInFlight ??= refreshStoredToken().finally(() => {
 		refreshInFlight = null;
 	});
 
@@ -530,17 +736,40 @@ async function getAccessToken() {
 	return refreshed.access_token;
 }
 
-async function refreshToken(refreshTokenValue: string) {
-	const params = new URLSearchParams({
-		client_id: TADO_CLIENT_ID,
-		grant_type: "refresh_token",
-		refresh_token: refreshTokenValue,
+async function refreshStoredToken() {
+	return withTokenMutation(async () => {
+		const currentToken = await readToken();
+		if (!currentToken?.refresh_token) {
+			throw Object.assign(new Error("tado is not connected yet."), {
+				provider: "tado authorization",
+				status: 401,
+			});
+		}
+		if (
+			currentToken.access_token &&
+			Number(currentToken.expires_at) > Date.now()
+		) {
+			return currentToken;
+		}
+
+		const params = new URLSearchParams({
+			client_id: TADO_CLIENT_ID,
+			grant_type: "refresh_token",
+			refresh_token: currentToken.refresh_token,
+		});
+		const refreshedToken = await requestJson<TadoToken>(
+			"https://login.tado.com/oauth2/token",
+			{
+				errorContext: "tado authorization",
+				method: "POST",
+				body: params,
+				headers: {
+					"content-type": "application/x-www-form-urlencoded",
+				},
+			},
+		);
+		return writeToken(refreshedToken, currentToken.refresh_token);
 	});
-	const token = await requestJson<TadoToken>(
-		`https://login.tado.com/oauth2/token?${params.toString()}`,
-		{ method: "POST" },
-	);
-	return writeToken(token);
 }
 
 async function tadoApi<T>(pathname: string) {
@@ -563,7 +792,13 @@ async function resolveTadoTopology() {
 	const me = await tadoApi<{ homes?: Array<{ id: number | string }> }>("/me");
 	const homeId = config.homeId || me.homes?.[0]?.id;
 
-	if (!homeId) throw new Error("No tado home found for this account.");
+	if (!homeId) {
+		throw createSampleFailure(
+			"No tado home found for this account.",
+			"provider_unavailable",
+			"tado",
+		);
+	}
 
 	const zones = await tadoApi<Array<TadoZone>>(
 		`/homes/${encodeURIComponent(homeId)}/zones`,
@@ -594,8 +829,10 @@ async function resolveTadoRooms() {
 		zoneStates,
 	});
 	if (!rooms.length) {
-		throw new Error(
+		throw createSampleFailure(
 			"No tado rooms with inside temperature readings were found.",
+			"provider_unavailable",
+			"tado",
 		);
 	}
 
@@ -1811,6 +2048,8 @@ function buildStatusFromHistoryEntry(
 			lastFreshAt: entry.checkedAt,
 			stale,
 			staleReason: stale ? error?.message : undefined,
+			staleFailureReason:
+				stale && error ? classifySampleFailure(error) : undefined,
 			location: entry.location || {
 				label: config.locationLabel,
 				latitude: config.latitude,
@@ -1850,6 +2089,8 @@ function buildStatusFromHistoryEntry(
 		lastFreshAt: entry.checkedAt,
 		stale,
 		staleReason: stale ? error?.message : undefined,
+		staleFailureReason:
+			stale && error ? classifySampleFailure(error) : undefined,
 		location: entry.location || {
 			label: config.locationLabel,
 			latitude: config.latitude,
@@ -2070,14 +2311,19 @@ async function sampleCoolingStatus(reason = "interval") {
 
 	sampleInFlight = collectFreshCoolingStatus()
 		.then((status) => {
+			lastSampleFailure = null;
 			console.log(`[window-watcher:${reason}] recorded ${status.checkedAt}`);
 			return status;
 		})
 		.catch(async (error: Error) => {
+			lastSampleFailure = error;
 			logSampleError(reason, error);
 
-			const history = await readHistory(1);
-			const fallback = buildStatusFromHistoryEntry(history.at(-1), error);
+			const history = await readHistory(7 * 24 * 60);
+			const latestFullHistory = history.findLast(
+				(entry) => entry.rooms.length > 0,
+			);
+			const fallback = buildStatusFromHistoryEntry(latestFullHistory, error);
 			if (fallback) statusCache = { createdAt: Date.now(), data: fallback };
 			return fallback;
 		})
@@ -2101,10 +2347,15 @@ function logSampleError(reason: string, error: Error) {
 
 export async function recordCoolingStatusSample(reason = "manual") {
 	const sampled = await sampleCoolingStatus(reason);
-	if (!sampled) {
-		return null;
+	if (!sampled || sampled.stale) {
+		return {
+			kind: "unavailable" as const,
+			reason:
+				sampled?.staleFailureReason || classifySampleFailure(lastSampleFailure),
+			status: sampled,
+		};
 	}
-	return sampled;
+	return { kind: "fresh" as const, status: sampled };
 }
 
 async function getCoolingStatus() {
@@ -2137,10 +2388,13 @@ async function getCoolingStatus() {
 
 	const fallback = buildStatusFromHistoryEntry(
 		latestFullHistory,
-		new Error("Fresh temperature data is unavailable."),
+		lastSampleFailure || new Error("Fresh temperature data is unavailable."),
 	);
 	if (!fallback) {
-		throw new Error("Could not read fresh temperatures and no history exists.");
+		throw (
+			lastSampleFailure ||
+			new Error("Could not read fresh temperatures and no history exists.")
+		);
 	}
 	return fallback;
 }

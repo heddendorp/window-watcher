@@ -13,25 +13,20 @@ export const Route = createFileRoute("/api/sample")({
 					return Response.json({ error: "Unauthorized" }, { status: 401 });
 				}
 
-				const status = await recordCoolingStatusSample("cron");
-				if (!status) {
-					return Response.json({
-						ok: true,
-						skipped: true,
-						reason: "rate_limited",
-					});
-				}
-				if (status.stale) {
+				const outcome = await recordCoolingStatusSample("cron");
+				if (outcome.kind === "unavailable") {
+					const statusCode = outcome.reason === "internal_error" ? 500 : 503;
 					return Response.json(
 						{
 							ok: false,
 							skipped: true,
-							reason: "stale_fallback",
-							lastFreshAt: status.lastFreshAt,
+							reason: outcome.reason,
+							lastFreshAt: outcome.status?.lastFreshAt,
 						},
-						{ status: 503 },
+						{ status: statusCode },
 					);
 				}
+				const { status } = outcome;
 
 				return Response.json({
 					ok: true,

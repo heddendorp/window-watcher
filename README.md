@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` if you want to override the defaults.
 
 Important local files:
 
-- `.tado-token.json`: local tado OAuth token, ignored by git
+- `data/.tado-token.json`: local tado OAuth token, ignored by git (`.tado-token.json` is the legacy fallback)
 - `data/temperature-history.jsonl`: persistent temperature history, ignored by git
 - `SAMPLE_INTERVAL_MS`: optional sampler override; defaults to one minute locally and ten minutes on Railway.
 - `PREDICTION_HORIZON_MINUTES`: comparison window for open versus closed room predictions; defaults to 90 minutes.
@@ -32,6 +32,7 @@ Authentication:
 - Set `VITE_WINDOW_WATCHER_AUTH=true`, `WINDOW_WATCHER_AUTH=true`, `VITE_CLERK_PUBLISHABLE_KEY`, and `CLERK_SECRET_KEY`.
 - Set `AUTHORIZED_EMAIL` to the single Google account that may access the dashboard.
 - The server function refuses to return temperature data unless the signed-in Clerk user has a verified Google OAuth account with that email.
+- When the tado authorization expires, the dashboard can start and complete a new tado device login. With Clerk enabled, the configured Google account authorizes the action. Without Clerk, production accepts the token only after tado proves that account belongs to the exact configured `TADO_HOME_ID`; the short-lived flow is bound to the initiating browser with a hardened cookie. Tokens stay server-side and are saved directly to the Railway volume.
 - Set `WINDOW_WATCHER_AUTH=true` only if you want the server to enforce Clerk auth locally too.
 
 ## Commands
@@ -52,9 +53,10 @@ Railway setup:
 1. Deploy from the public GitHub repo.
 2. To enable Google auth, add `VITE_WINDOW_WATCHER_AUTH=true`, `WINDOW_WATCHER_AUTH=true`, `VITE_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `AUTHORIZED_EMAIL` as Railway variables. Leave the auth flags unset or `false` until Clerk keys are configured.
 3. In Clerk, enable Google sign-in and add the Railway production domain to the allowed production URLs/redirect configuration for the Clerk application.
-4. Add the location/tado variables from `.env.example` as needed.
-5. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH` to the mount path. The app stores `temperature-history.jsonl` and `.tado-token.json` below that path. For first boot, set `TADO_TOKEN_JSON` as a secret Railway variable with the local tado token JSON; after the first refresh, the volume-backed token file keeps future updates.
-6. Start command is `pnpm run start`. For Railway Serverless/App Sleeping, set `BACKGROUND_SAMPLER=false` on the web service and use the `POST /api/sample` cron service to record samples.
+4. Add the location/tado variables from `.env.example` as needed. Set `TADO_HOME_ID` on Railway so a reconnect can never install credentials for a different household.
+5. Attach a Railway volume and set `RAILWAY_VOLUME_MOUNT_PATH` to the mount path. The app stores `temperature-history.jsonl` and `.tado-token.json` below that path. `TADO_TOKEN_JSON` may bootstrap an empty volume once, but remove it after the volume token is proven; later recovery belongs in the deployed reconnect panel.
+6. Start command is `pnpm run start`. Keep App Sleeping off, set `BACKGROUND_SAMPLER=false`, and use the separate ten-minute `POST /api/sample` cron service to record samples.
+7. Keep the sampler command identical to `scripts/railway-sampler-command.txt`. It treats typed rate-limit, invalid-authorization, and provider-unavailable responses as completed checks with no fresh value. Transport failures, bad trigger credentials, internal errors, edge errors, malformed success responses, and unexpected bodies still fail the cron.
 
 Railway does not replace app-level auth here. Its "Login with Railway" feature is for letting applications authenticate Railway users and access Railway resources, while this dashboard needs Google sign-in for one private user. Clerk is the cleaner fit and is also one of Railway's documented frontend-auth options.
 

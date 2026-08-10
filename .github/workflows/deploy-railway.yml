@@ -20,6 +20,7 @@ jobs:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_PROJECT_ID: f584dbe5-aff5-4282-b423-0e7a874e9028
       RAILWAY_SERVICE_ID: 42cf18f5-12d3-4e81-93f1-a15a9f2bc408
+      RAILWAY_SAMPLER_SERVICE_ID: 5e0f161c-f809-40a0-bec6-6754febecf1e
       RAILWAY_ENVIRONMENT: production
       APP_VERSION_URL: https://window-watcher-production.up.railway.app/app-version.json
     steps:
@@ -40,6 +41,54 @@ jobs:
 
       - name: Install Railway CLI
         run: npm install --global @railway/cli@5.26.0
+
+      - name: Verify Railway service configuration
+        run: |
+          railway link \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT"
+
+          railway_config="$(railway environment config \
+            --environment "$RAILWAY_ENVIRONMENT" \
+            --json)"
+          shared_token_reference='$'"{{shared.SAMPLE_TRIGGER_TOKEN}}"
+
+          if ! printf '%s' "$railway_config" | jq -e \
+              --arg web "$RAILWAY_SERVICE_ID" \
+              --arg sampler "$RAILWAY_SAMPLER_SERVICE_ID" \
+              --arg sharedTokenReference "$shared_token_reference" '
+                .services[$web].deploy as $webDeploy |
+                .services[$sampler] as $samplerService |
+                $samplerService.deploy as $samplerDeploy |
+                (($webDeploy.sleepApplication // false) == false) and
+                ([ $webDeploy.multiRegionConfig[].numReplicas ] | add == 1) and
+                ($samplerDeploy.cronSchedule == "*/10 * * * *") and
+                ($samplerDeploy.restartPolicyType == "NEVER") and
+                ($samplerService.source.image == "curlimages/curl:8.11.1") and
+                (.services[$web].source.repo == "heddendorp/window-watcher") and
+                ([ .services[$web].volumeMounts[].mountPath ] | contains(["/data"])) and
+                (.services[$web].variables.BACKGROUND_SAMPLER.value == "false") and
+                (.services[$web].variables.RAILWAY_VOLUME_MOUNT_PATH.value == "/data") and
+                (.services[$web].variables.TADO_HOME_ID.value | length > 0) and
+                (.sharedVariables.SAMPLE_TRIGGER_TOKEN.isSealed == true) and
+                (.services[$web].variables.SAMPLE_TRIGGER_TOKEN.value == $sharedTokenReference) and
+                ($samplerService.variables.SAMPLE_TRIGGER_TOKEN.value == $sharedTokenReference) and
+                ($samplerService.variables.SAMPLE_URL.value == "https://window-watcher-production.up.railway.app/api/sample") and
+                (.services[$web].variables | has("TADO_TOKEN_JSON") | not)
+              ' >/dev/null
+          then
+            echo "::error::Railway web/sampler configuration has drifted."
+            exit 1
+          fi
+
+          expected_sampler_command="$(cat scripts/railway-sampler-command.txt)"
+          actual_sampler_command="$(printf '%s' "$railway_config" | jq -r \
+            --arg sampler "$RAILWAY_SAMPLER_SERVICE_ID" \
+            '.services[$sampler].deploy.startCommand // ""')"
+          if [ "$actual_sampler_command" != "$expected_sampler_command" ]; then
+            echo "::error::Railway sampler command differs from scripts/railway-sampler-command.txt."
+            exit 1
+          fi
 
       - name: Set deployment version
         run: |

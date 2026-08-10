@@ -1,3 +1,5 @@
+import type { SampleFailureReason } from "./sample-failure";
+
 export type TrendDirection = "falling" | "steady" | "rising";
 
 export type VerdictAction = "open" | "maybe" | "closed" | "unknown";
@@ -87,6 +89,7 @@ export type CoolingStatus = {
 	lastFreshAt?: string;
 	stale?: boolean;
 	staleReason?: string;
+	staleFailureReason?: SampleFailureReason;
 	cached?: boolean;
 	location: {
 		label: string;

@@ -38,6 +38,7 @@ import {
 	pollTadoReconnect,
 	startTadoReconnect,
 } from "../window-watcher/functions";
+import type { SampleFailureReason } from "../window-watcher/sample-failure";
 import { describeNextCheck } from "../window-watcher/sampling-schedule";
 import { getSparklineAreaStops } from "../window-watcher/sparkline";
 import {
@@ -69,7 +70,17 @@ const sparklineCurveType = mainChartCurveType;
 const measurementProgressRecalculationMs = 5 * 1000;
 const appVersionCheckIntervalMs = 60 * 1000;
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
-const localReconnectEnabled = import.meta.env.DEV;
+const tadoReconnectEnabled = import.meta.env.DEV || import.meta.env.PROD;
+
+class DashboardLoadError extends Error {
+	constructor(
+		message: string,
+		readonly failureReason: SampleFailureReason,
+	) {
+		super(message);
+		this.name = "DashboardLoadError";
+	}
+}
 
 function App() {
 	useAppVersionReload();
@@ -115,7 +126,13 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 	};
 	const dashboard = useQuery({
 		queryKey: ["window-watcher-dashboard"],
-		queryFn: () => getDashboardData(),
+		queryFn: async () => {
+			const result = await getDashboardData();
+			if (!result.ok) {
+				throw new DashboardLoadError(result.error.message, result.error.reason);
+			}
+			return result.data;
+		},
 		refetchInterval: 60_000,
 	});
 
@@ -152,9 +169,20 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<Button onClick={() => void dashboard.refetch()} type="button">
-							Try again
-						</Button>
+						<div className="flex flex-col gap-4">
+							<Button
+								className="self-start"
+								onClick={() => void dashboard.refetch()}
+								type="button"
+							>
+								Try again
+							</Button>
+							{tadoReconnectEnabled &&
+							dashboard.error instanceof DashboardLoadError &&
+							dashboard.error.failureReason === "tado_auth_invalid" ? (
+								<TadoReconnectPanel />
+							) : null}
+						</div>
 					</CardContent>
 				</Card>
 			</main>
@@ -650,7 +678,7 @@ function Dashboard({
 				</div>
 			</section>
 
-			{localReconnectEnabled && shouldShowTadoReconnect(status) ? (
+			{tadoReconnectEnabled && shouldShowTadoReconnect(status) ? (
 				<TadoReconnectPanel />
 			) : null}
 
@@ -830,13 +858,22 @@ function TadoReconnectPanel() {
 		mutationFn: (flowId: string) => pollTadoReconnect({ data: { flowId } }),
 		onSuccess: async (result) => {
 			setMessage(result.message);
+			if (result.status === "pending" && result.intervalSeconds) {
+				setFlow((currentFlow) =>
+					currentFlow
+						? { ...currentFlow, intervalSeconds: result.intervalSeconds }
+						: currentFlow,
+				);
+			}
 			if (result.status === "connected") {
 				setFlow(null);
 				await queryClient.invalidateQueries({
 					queryKey: ["window-watcher-dashboard"],
 				});
 			}
-			if (result.status === "expired") setFlow(null);
+			if (result.status === "expired" || result.status === "denied") {
+				setFlow(null);
+			}
 		},
 		onError: (error) => {
 			setMessage(
@@ -860,12 +897,12 @@ function TadoReconnectPanel() {
 			<div className="col-start-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
 					<AlertTitle className="text-sm font-extrabold text-[var(--ww-ink)]">
-						tado needs a local reconnect
+						tado needs reconnecting
 					</AlertTitle>
 					<AlertDescription className="mt-1 text-sm font-semibold text-[var(--ww-ink-soft)]">
 						{flow
 							? `Code ${flow.userCode} · expires ${formatTime(new Date(flow.expiresAt))}`
-							: "This only writes a token on your local dev server."}
+							: "The new connection is saved securely on this server."}
 					</AlertDescription>
 					{message ? (
 						<p className="mt-1 text-xs font-semibold text-[var(--ww-ink-faint)]">
@@ -900,19 +937,8 @@ function TadoReconnectPanel() {
 }
 
 function shouldShowTadoReconnect(status: DashboardData["status"]) {
-	if (!status.stale) return false;
-	const reason = status.staleReason?.toLowerCase() || "";
-	if (
-		reason.includes("429") ||
-		reason.includes("rate limit") ||
-		reason.includes("rate-limited")
-	) {
-		return false;
-	}
 	return (
-		reason.includes("tado") ||
-		reason.includes("refresh_token") ||
-		reason.includes("token")
+		status.stale === true && status.staleFailureReason === "tado_auth_invalid"
 	);
 }
 

@@ -1,3 +1,5 @@
+import { createSampleFailure } from "./sample-failure";
+
 export type TadoZone = {
 	id: number | string;
 	name: string;
@@ -53,18 +55,26 @@ export function selectTadoRoomSnapshots({
 		const temperature = state?.sensorDataPoints?.insideTemperature;
 		if (!Number.isFinite(temperature?.celsius)) {
 			if (zone.type === "HOT_WATER") return [];
-			throw new Error(
+			throw createSampleFailure(
 				`tado did not return a current temperature for ${zone.name}.`,
+				"provider_unavailable",
+				"tado",
 			);
 		}
 		const observedAt = validTimestamp(temperature?.timestamp, nowMs);
 		if (!observedAt) {
-			throw new Error(
+			throw createSampleFailure(
 				`tado returned an invalid observation time for ${zone.name}.`,
+				"provider_unavailable",
+				"tado",
 			);
 		}
 		if (nowMs - new Date(observedAt).getTime() > maximumObservationAgeMs) {
-			throw new Error(`tado's observation for ${zone.name} is too old.`);
+			throw createSampleFailure(
+				`tado's observation for ${zone.name} is too old.`,
+				"provider_unavailable",
+				"tado",
+			);
 		}
 
 		return [
