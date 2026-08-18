@@ -34,6 +34,10 @@ import {
 	TooltipTrigger,
 } from "../components/ui/tooltip";
 import {
+	createDashboardWakeHandler,
+	runWithAbortTimeout,
+} from "../window-watcher/dashboard-refresh";
+import {
 	getDashboardData,
 	pollTadoReconnect,
 	startTadoReconnect,
@@ -69,6 +73,10 @@ const mainChartCurveType = "basis";
 const sparklineCurveType = mainChartCurveType;
 const measurementProgressRecalculationMs = 5 * 1000;
 const appVersionCheckIntervalMs = 60 * 1000;
+const appVersionRequestTimeoutMs = 10 * 1000;
+const dashboardRefreshIntervalMs = 60 * 1000;
+const dashboardRequestTimeoutMs = 30 * 1000;
+const dashboardQueryKey = ["window-watcher-dashboard"] as const;
 const authEnabled = import.meta.env.VITE_WINDOW_WATCHER_AUTH === "true";
 const tadoReconnectEnabled = import.meta.env.DEV || import.meta.env.PROD;
 
@@ -112,6 +120,7 @@ function AuthenticatedApp() {
 }
 
 function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
+	const queryClient = useQueryClient();
 	const { range } = Route.useSearch();
 	const navigate = Route.useNavigate();
 	const rangeMode = range ?? "4h";
@@ -125,16 +134,54 @@ function DashboardQuery({ authEnabled }: { authEnabled: boolean }) {
 		});
 	};
 	const dashboard = useQuery({
-		queryKey: ["window-watcher-dashboard"],
-		queryFn: async () => {
-			const result = await getDashboardData();
+		queryKey: dashboardQueryKey,
+		queryFn: async ({ signal }) => {
+			const result = await runWithAbortTimeout(
+				(requestSignal) => getDashboardData({ signal: requestSignal }),
+				{ signal, timeoutMs: dashboardRequestTimeoutMs },
+			);
 			if (!result.ok) {
 				throw new DashboardLoadError(result.error.message, result.error.reason);
 			}
 			return result.data;
 		},
-		refetchInterval: 60_000,
+		refetchInterval: dashboardRefreshIntervalMs,
+		refetchOnReconnect: false,
+		refetchOnWindowFocus: false,
+		retry: (failureCount, error) =>
+			!(error instanceof DashboardLoadError) && failureCount < 1,
 	});
+
+	useEffect(() => {
+		const refresh = createDashboardWakeHandler({
+			isOnline: () => navigator.onLine !== false,
+			isVisible: () => document.visibilityState === "visible",
+			refresh: () => {
+				void queryClient
+					.cancelQueries({ exact: true, queryKey: dashboardQueryKey })
+					.then(() =>
+						queryClient.refetchQueries({
+							exact: true,
+							queryKey: dashboardQueryKey,
+							type: "active",
+						}),
+					);
+			},
+		});
+		const handleVisibilityChange = () => refresh();
+
+		window.addEventListener("focus", refresh);
+		window.addEventListener("online", refresh);
+		window.addEventListener("pageshow", refresh);
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+
+		return () => {
+			window.removeEventListener("focus", refresh);
+			window.removeEventListener("online", refresh);
+			window.removeEventListener("pageshow", refresh);
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+		};
+	}, [queryClient]);
 
 	if (dashboard.isLoading) {
 		return (
@@ -266,9 +313,14 @@ function useAppVersionReload() {
 
 		async function checkVersion() {
 			try {
-				const response = await fetch("/app-version.json", {
-					cache: "no-store",
-				});
+				const response = await runWithAbortTimeout(
+					(signal) =>
+						fetch("/app-version.json", {
+							cache: "no-store",
+							signal,
+						}),
+					{ timeoutMs: appVersionRequestTimeoutMs },
+				);
 				if (!active || !response.ok) return;
 
 				const payload = (await response.json()) as { version?: unknown };
@@ -298,12 +350,16 @@ function useAppVersionReload() {
 		check();
 		const interval = window.setInterval(check, appVersionCheckIntervalMs);
 		window.addEventListener("focus", check);
+		window.addEventListener("online", check);
+		window.addEventListener("pageshow", check);
 		document.addEventListener("visibilitychange", handleVisibilityChange);
 
 		return () => {
 			active = false;
 			window.clearInterval(interval);
 			window.removeEventListener("focus", check);
+			window.removeEventListener("online", check);
+			window.removeEventListener("pageshow", check);
 			document.removeEventListener("visibilitychange", handleVisibilityChange);
 		};
 	}, []);
