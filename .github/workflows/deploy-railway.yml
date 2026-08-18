@@ -69,8 +69,6 @@ jobs:
 
           if ! printf '%s' "$web_deployment" | jq -e '
               .[0] |
-              .status == "SUCCESS" and
-              .meta.repo == "heddendorp/window-watcher" and
               ((.meta.serviceManifest.deploy.sleepApplication // false) == false) and
               ([ .meta.serviceManifest.deploy.multiRegionConfig[].numReplicas ] | add == 1) and
               (.meta.volumeMounts | contains(["/data"]))
