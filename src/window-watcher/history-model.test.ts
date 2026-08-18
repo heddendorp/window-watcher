@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeTemperatureHistoryEntry } from "./history-model";
+import {
+	compactDashboardHistoryEntry,
+	getHistoryEntryLimit,
+	sanitizeTemperatureHistoryEntry,
+} from "./history-model";
 import type { TemperatureHistoryEntry } from "./types";
 
 const baseEntry: TemperatureHistoryEntry = {
@@ -66,5 +70,39 @@ describe("sanitizeTemperatureHistoryEntry", () => {
 		};
 
 		expect(sanitizeTemperatureHistoryEntry(entry)).toBe(entry);
+	});
+});
+
+describe("dashboard history", () => {
+	it("requests only the entries possible inside the requested duration", () => {
+		expect(getHistoryEntryLimit(7 * 24 * 60 * 60 * 1000, 10 * 60 * 1000)).toBe(
+			1_009,
+		);
+	});
+
+	it("keeps chart measurements and removes saved recommendation payloads", () => {
+		const compact = compactDashboardHistoryEntry({
+			...baseEntry,
+			outside: {
+				...baseEntry.outside,
+				observedAt: "2026-07-13T15:40:00.000Z",
+			},
+		});
+
+		expect(compact).toEqual({
+			checkedAt: baseEntry.checkedAt,
+			outside: {
+				temperatureC: 21.7,
+				observedAt: "2026-07-13T15:40:00.000Z",
+			},
+			rooms: [
+				{
+					zoneId: 1,
+					zoneName: "Living room",
+					temperatureC: 29.4,
+					observedAt: "2026-07-13T15:43:00.000Z",
+				},
+			],
+		});
 	});
 });

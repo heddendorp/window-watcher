@@ -70,6 +70,7 @@ Before editing files for a substantial task:
 - TanStack Router file routes
 - TanStack Query for dashboard refresh
 - JSONL-backed temperature history, read on the server and rendered directly by the dashboard
+- History reads seek backward from the end of the JSONL file and the dashboard returns compact chart-only rows for the configured seven-day window. Do not restore whole-file reads or return saved per-sample recommendations/forecast arrays to the browser; the production volume history grows continuously and those patterns made dashboard responses tens of megabytes.
 - Generated form/table demo pages and their unused dependencies were removed because Window Watcher is the only product surface
 - Clerk TanStack React Start SDK for Google sign-in and session handling
 - shadcn component setup via `components.json` and generated UI components

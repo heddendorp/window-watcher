@@ -16,7 +16,12 @@ import {
 	getForecastTemperatureAt,
 	getTimeWeightedForecastTemperature,
 } from "./forecast-model";
-import { sanitizeTemperatureHistoryEntry } from "./history-model";
+import { readLastNonEmptyLines } from "./history-file";
+import {
+	compactDashboardHistoryEntry,
+	getHistoryEntryLimit,
+	sanitizeTemperatureHistoryEntry,
+} from "./history-model";
 import { classifySampleFailure, createSampleFailure } from "./sample-failure";
 import { getNextExpectedCheckAt } from "./sampling-schedule";
 import {
@@ -81,6 +86,7 @@ const DEFAULT_PREDICTION_HORIZON_MINUTES = 90;
 const DEFAULT_MIN_PREDICTED_OPEN_BENEFIT_C = 0.3;
 const DEFAULT_TARGET_MAX_C = 22.5;
 const DEFAULT_MIN_FORECAST_COOLING_WINDOW_MINUTES = 30;
+const DASHBOARD_HISTORY_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const IS_RAILWAY =
 	Boolean(process.env.RAILWAY_ENVIRONMENT_ID) ||
 	Boolean(process.env.RAILWAY_ENVIRONMENT);
@@ -2009,10 +2015,7 @@ async function appendOutsideHistory(
 
 export async function readHistory(limit = 960) {
 	try {
-		const raw = await fs.readFile(HISTORY_FILE, "utf8");
-		const lines = raw.trim().split("\n").filter(Boolean);
-		return lines
-			.slice(-limit)
+		return (await readLastNonEmptyLines(HISTORY_FILE, limit))
 			.map((line) => JSON.parse(line) as TemperatureHistoryEntry)
 			.map(sanitizeTemperatureHistoryEntry);
 	} catch (error) {
@@ -2179,8 +2182,10 @@ function buildUnavailableVerdict(reason: string): CoolingStatus["verdict"] {
 }
 
 async function collectFreshCoolingStatus() {
+	const previousHistoryDurationMs =
+		Math.max(config.outdoorTrendHours, 24) * 60 * 60 * 1000;
 	const previousHistory = await readHistory(
-		Math.ceil(Math.max(config.outdoorTrendHours, 24) * 60),
+		getHistoryEntryLimit(previousHistoryDurationMs, config.sampleIntervalMs),
 	);
 	const outside = await fetchOutsideWeather();
 	const outsideC = outside.current?.temperatureC;
@@ -2319,7 +2324,12 @@ async function sampleCoolingStatus(reason = "interval") {
 			lastSampleFailure = error;
 			logSampleError(reason, error);
 
-			const history = await readHistory(7 * 24 * 60);
+			const history = await readHistory(
+				getHistoryEntryLimit(
+					DASHBOARD_HISTORY_DURATION_MS,
+					config.sampleIntervalMs,
+				),
+			);
 			const latestFullHistory = history.findLast(
 				(entry) => entry.rooms.length > 0,
 			);
@@ -2412,9 +2422,13 @@ export function startBackgroundSampler() {
 
 export async function getDashboardPayload() {
 	startBackgroundSampler();
+	const dashboardHistoryLimit = getHistoryEntryLimit(
+		DASHBOARD_HISTORY_DURATION_MS,
+		config.sampleIntervalMs,
+	);
 	const [status, history] = await Promise.all([
 		getCoolingStatus(),
-		readHistory(7 * 24 * 60),
+		readHistory(dashboardHistoryLimit),
 	]);
 	const generatedAt = new Date();
 	const lastSuccessfulCheckAt = new Date(
@@ -2422,7 +2436,7 @@ export async function getDashboardPayload() {
 	).getTime();
 	return {
 		status,
-		history,
+		history: history.map(compactDashboardHistoryEntry),
 		generatedAt: generatedAt.toISOString(),
 		sampling: {
 			intervalMs: config.sampleIntervalMs,
